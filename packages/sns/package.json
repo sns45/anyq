@@ -1,6 +1,6 @@
 {
   "name": "@anyq/sns",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AWS SNS adapter for anyq",
   "type": "module",
   "main": "./dist/index.js",

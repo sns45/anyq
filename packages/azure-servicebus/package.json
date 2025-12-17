@@ -1,6 +1,6 @@
 {
   "name": "@anyq/azure-servicebus",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Azure Service Bus adapter for anyq",
   "type": "module",
   "main": "./dist/index.js",
