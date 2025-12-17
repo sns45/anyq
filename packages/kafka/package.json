@@ -1,0 +1,46 @@
+{
+  "name": "@anyq/kafka",
+  "version": "0.1.0",
+  "description": "Apache Kafka adapter for anyq",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun && bun run build:types",
+    "build:types": "tsc --emitDeclarationOnly --outDir dist",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@anyq/core": "workspace:*",
+    "kafkajs": "^2.2.4"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "@anyq/core": "workspace:*"
+  },
+  "keywords": [
+    "queue",
+    "kafka",
+    "message-queue",
+    "streaming",
+    "anyq"
+  ],
+  "author": "",
+  "license": "MIT"
+}

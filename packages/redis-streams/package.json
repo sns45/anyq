@@ -1,0 +1,46 @@
+{
+  "name": "@anyq/redis-streams",
+  "version": "0.1.0",
+  "description": "Redis Streams adapter for anyq",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun && bun run build:types",
+    "build:types": "tsc --emitDeclarationOnly --outDir dist",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@anyq/core": "workspace:*",
+    "ioredis": "^5.4.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "@anyq/core": "workspace:*"
+  },
+  "keywords": [
+    "queue",
+    "redis",
+    "redis-streams",
+    "message-queue",
+    "anyq"
+  ],
+  "author": "",
+  "license": "MIT"
+}

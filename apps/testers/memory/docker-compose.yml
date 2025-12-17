@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  memory-tester:
+    build:
+      context: ../../..
+      dockerfile: apps/testers/memory/Dockerfile
+    container_name: anyq-memory-tester
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - QUEUE_NAME=test-orders
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

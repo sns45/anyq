@@ -1,0 +1,13 @@
+services:
+  pubsub-emulator:
+    image: google/cloud-sdk:emulators
+    container_name: anyq-pubsub-emulator
+    command: gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=anyq-local
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8085 || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 30s

@@ -1,0 +1,24 @@
+{
+  "name": "@anyq/tester-redis-streams",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Redis Streams adapter tester for anyq",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f"
+  },
+  "dependencies": {
+    "@anyq/core": "workspace:*",
+    "@anyq/redis-streams": "workspace:*",
+    "hono": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.0.0"
+  }
+}

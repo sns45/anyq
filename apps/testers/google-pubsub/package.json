@@ -1,0 +1,23 @@
+{
+  "name": "@anyq/google-pubsub-tester",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --hot src/index.ts",
+    "start": "bun run src/index.ts",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down -v",
+    "docker:logs": "docker compose logs -f",
+    "test": "bun run docker:up && sleep 5 && bun run dev"
+  },
+  "dependencies": {
+    "@anyq/core": "workspace:*",
+    "@anyq/google-pubsub": "workspace:*",
+    "hono": "^4.3.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.3.3"
+  }
+}

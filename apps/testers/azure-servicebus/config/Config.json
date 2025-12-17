@@ -1,0 +1,23 @@
+{
+  "UserConfig": {
+    "Namespaces": [
+      {
+        "Name": "anyq-namespace",
+        "Queues": [
+          {
+            "Name": "orders",
+            "Properties": {
+              "MaxDeliveryCount": 10,
+              "LockDuration": "PT1M",
+              "MaxSizeInMegabytes": 1024
+            }
+          }
+        ],
+        "Topics": []
+      }
+    ],
+    "Logging": {
+      "Type": "Console"
+    }
+  }
+}

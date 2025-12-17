@@ -1,0 +1,46 @@
+{
+  "name": "@anyq/rabbitmq",
+  "version": "0.0.1",
+  "description": "RabbitMQ adapter for anyq",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@anyq/core": "workspace:*",
+    "amqplib": "^0.10.4"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.5",
+    "typescript": "^5.3.3"
+  },
+  "peerDependencies": {
+    "@anyq/core": "workspace:*"
+  },
+  "keywords": [
+    "anyq",
+    "queue",
+    "rabbitmq",
+    "amqp",
+    "message-queue"
+  ],
+  "author": "",
+  "license": "MIT"
+}
