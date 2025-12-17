@@ -1,20 +1,24 @@
 {
   "name": "@anyq/azure-servicebus",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Azure Service Bus adapter for anyq",
   "type": "module",
   "main": "./dist/index.js",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "default": "./dist/index.js"
     }
   },
+  "files": ["dist"],
   "scripts": {
     "build": "tsc",
-    "clean": "rm -rf dist",
-    "prepublishOnly": "bun run build"
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
   },
   "dependencies": {
     "@anyq/core": "workspace:*",
@@ -35,6 +39,18 @@
     "service-bus",
     "servicebus"
   ],
-  "author": "",
-  "license": "MIT"
+  "license": "MIT",
+  "author": "Shantanu Sharma",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sns45/anyq",
+    "directory": "packages/azure-servicebus"
+  },
+  "homepage": "https://github.com/sns45/anyq#readme",
+  "bugs": {
+    "url": "https://github.com/sns45/anyq/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

@@ -36,9 +36,17 @@
     "anyq"
   ],
   "license": "MIT",
+  "author": "Shantanu Sharma",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/anyq",
+    "url": "https://github.com/sns45/anyq",
     "directory": "packages/memory"
+  },
+  "homepage": "https://github.com/sns45/anyq#readme",
+  "bugs": {
+    "url": "https://github.com/sns45/anyq/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

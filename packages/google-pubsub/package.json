@@ -1,6 +1,6 @@
 {
   "name": "@anyq/google-pubsub",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Google Cloud Pub/Sub adapter for anyq",
   "type": "module",
   "main": "./dist/index.js",
@@ -13,10 +13,7 @@
       "default": "./dist/index.js"
     }
   },
-  "files": [
-    "dist",
-    "src"
-  ],
+  "files": ["dist"],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
@@ -41,6 +38,18 @@
     "gcp",
     "message-queue"
   ],
-  "author": "",
-  "license": "MIT"
+  "license": "MIT",
+  "author": "Shantanu Sharma",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sns45/anyq",
+    "directory": "packages/google-pubsub"
+  },
+  "homepage": "https://github.com/sns45/anyq#readme",
+  "bugs": {
+    "url": "https://github.com/sns45/anyq/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@anyq/sqs",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "AWS SQS adapter for anyq",
   "type": "module",
   "main": "./dist/index.js",
@@ -12,6 +12,7 @@
       "types": "./dist/index.d.ts"
     }
   },
+  "files": ["dist"],
   "scripts": {
     "build": "bun build ./src/index.ts --outdir ./dist --target bun && bun run build:types",
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
@@ -29,7 +30,19 @@
   "peerDependencies": {
     "@anyq/core": "workspace:*"
   },
-  "files": ["dist"],
   "keywords": ["anyq", "queue", "sqs", "aws", "message-queue"],
-  "license": "MIT"
+  "license": "MIT",
+  "author": "Shantanu Sharma",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sns45/anyq",
+    "directory": "packages/sqs"
+  },
+  "homepage": "https://github.com/sns45/anyq#readme",
+  "bugs": {
+    "url": "https://github.com/sns45/anyq/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

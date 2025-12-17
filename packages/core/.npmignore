@@ -1,0 +1,18 @@
+# Source files (dist is published)
+src/
+test/
+
+# TypeScript build info
+*.tsbuildinfo
+tsconfig.json
+
+# Development files
+.env*
+*.log
+.DS_Store
+
+# Test files
+__tests__/
+*.test.ts
+*.spec.ts
+coverage/
