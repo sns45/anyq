@@ -1,0 +1,63 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  compliance:
+    uses: ./.github/workflows/compliance.yml
+
+  publish:
+    needs: compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun run build
+
+      - name: Configure npm auth
+        run: echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+
+      - name: Publish all packages
+        run: |
+          PACKAGES=(
+            core
+            memory
+            redis-streams
+            rabbitmq
+            sqs
+            sns
+            google-pubsub
+            kafka
+            nats
+            azure-servicebus
+          )
+
+          for pkg in "${PACKAGES[@]}"; do
+            echo "Publishing @anyq/$pkg..."
+            cd packages/$pkg
+            bun publish --access public --no-git-checks || echo "Failed or already published: @anyq/$pkg"
+            cd ../..
+          done
+
+      - name: Publish Summary
+        run: |
+          echo "## Published Packages" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          for pkg in core memory redis-streams rabbitmq sqs sns google-pubsub kafka nats azure-servicebus; do
+            echo "- \`@anyq/$pkg\`" >> $GITHUB_STEP_SUMMARY
+          done

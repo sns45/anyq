@@ -15,8 +15,9 @@
   },
   "files": ["dist"],
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun && bun run build:types",
+    "build:types": "tsc --emitDeclarationOnly --outDir dist",
+    "dev": "bun build ./src/index.ts --outdir ./dist --target bun --watch",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
