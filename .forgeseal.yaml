@@ -1,0 +1,4 @@
+sbom:
+  spec_version: "1.5"
+  format: json
+  include_dev: false

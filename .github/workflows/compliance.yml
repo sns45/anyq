@@ -1,0 +1,67 @@
+name: Compliance
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  compliance:
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun run build
+
+      - name: Forgeseal Pipeline
+        uses: sns45/forgeseal@v1
+        id: forgeseal
+        with:
+          command: pipeline
+          dir: .
+          output-dir: ./forgeseal-output
+          sign: "true"
+          attest: "true"
+          vex-triage: "true"
+          fail-on: critical
+          include-dev: "false"
+          upload-assets: ${{ startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Upload compliance artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-bundle
+          path: ./forgeseal-output/
+          retention-days: 90
+
+      - name: Compliance Summary
+        run: |
+          echo "## EU CRA Compliance Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Artifact | Path |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| SBOM | \`${{ steps.forgeseal.outputs.sbom-path }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Signature | \`${{ steps.forgeseal.outputs.bundle-path }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Attestation | \`${{ steps.forgeseal.outputs.attestation-path }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| VEX | \`${{ steps.forgeseal.outputs.vex-path }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Vulnerabilities found:** ${{ steps.forgeseal.outputs.vuln-count }}" >> $GITHUB_STEP_SUMMARY
