@@ -7,12 +7,12 @@
     "apps/testers/*"
   ],
   "scripts": {
-    "build": "bun run --filter '*' build",
+    "build": "bun run --filter '@anyq/core' build && bun run --filter '@anyq/*' --filter '!@anyq/core' build",
     "test": "bun run --filter '@anyq/core' --filter '@anyq/memory' test",
     "lint": "echo 'Linter not yet configured'",
-    "clean": "bun run --filter '*' clean",
-    "dev": "bun run --filter '*' dev",
-    "typecheck": "bun run --filter '*' typecheck"
+    "clean": "bun run --filter '@anyq/*' clean",
+    "dev": "bun run --filter '@anyq/*' dev",
+    "typecheck": "bun run --filter '@anyq/*' typecheck"
   },
   "devDependencies": {
     "@types/bun": "^1.1.0",
