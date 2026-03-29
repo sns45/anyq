@@ -33,7 +33,7 @@ jobs:
         run: bun run build
 
       - name: Forgeseal Pipeline
-        uses: sns45/forgeseal@v1
+        uses: sns45/forgeseal@v0.3.0
         id: forgeseal
         with:
           command: pipeline
