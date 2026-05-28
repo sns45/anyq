@@ -1,6 +1,6 @@
 {
   "name": "@anyq/google-pubsub",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Google Cloud Pub/Sub adapter for anyq",
   "type": "module",
   "main": "./dist/index.js",
@@ -16,7 +16,7 @@
   "files": ["dist"],
   "scripts": {
     "build": "bun build ./src/index.ts --outdir ./dist --target bun && bun run build:types",
-    "build:types": "tsc --emitDeclarationOnly --outDir dist",
+    "build:types": "tsc --build --force",
     "dev": "bun build ./src/index.ts --outdir ./dist --target bun --watch",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"

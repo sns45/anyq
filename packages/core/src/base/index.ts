@@ -10,3 +10,5 @@ export {
   BaseConsumer,
   EventEmitter,
 } from './base-adapter.js';
+
+export type { ApplyStrategyResult } from './base-adapter.js';

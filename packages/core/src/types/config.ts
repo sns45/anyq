@@ -93,6 +93,38 @@ export interface LogConfig {
 }
 
 /**
+ * Structural decision shape produced by a retry strategy.
+ *
+ * Mirrors `RetryDecision` from `@anyq/core/strategies`. Duplicated here so
+ * `types/` does not import from `strategies/`, which would close a circular
+ * dependency (strategies -> types/message -> types/config).
+ */
+export type BaseRetryDecision =
+  | { action: 'ack' }
+  | { action: 'retry'; delayMs: number }
+  | { action: 'requeue' }
+  | { action: 'deadLetter'; reason: string }
+  | { action: 'park'; delayMs: number }
+  | { action: 'fail' };
+
+/**
+ * Per-message retry strategy hook.
+ *
+ * Mirrors `RetryStrategy<unknown>` from `@anyq/core/strategies`. Any value
+ * assignable to `RetryStrategy<T>` is assignable to this type (method-style
+ * `decide` permits bivariant parameter checks).
+ */
+export interface BaseRetryStrategy {
+  readonly name: string;
+  decide(ctx: {
+    message: unknown;
+    error: Error;
+    attempt: number;
+    maxAttempts: number;
+  }): BaseRetryDecision | Promise<BaseRetryDecision>;
+}
+
+/**
  * Base configuration shared by all queue drivers
  */
 export interface BaseQueueConfig {
@@ -119,6 +151,16 @@ export interface BaseQueueConfig {
 
   /** Request timeout in milliseconds. Default: 30000 */
   requestTimeout?: number;
+
+  /**
+   * Per-message retry strategy. When omitted, the adapter's legacy catch-block
+   * behaviour is preserved.
+   *
+   * See `@anyq/core/strategies` for built-in factories
+   * (`retryThenDeadLetter`, `logAndSkip`, `deadLetterImmediate`,
+   * `backpressurePause`, `logAndFail`, `custom`).
+   */
+  strategy?: BaseRetryStrategy;
 }
 
 /**

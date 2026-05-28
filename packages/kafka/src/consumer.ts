@@ -188,17 +188,20 @@ export class KafkaConsumer<T = unknown> extends BaseConsumer<T> {
             await message.ack();
           }
         } catch (error) {
-          this.logger.error('Error processing message', {
-            topic: payload.topic,
-            partition: payload.partition,
-            offset: payload.message.offset,
-            error: error instanceof Error ? error.message : String(error),
-          });
-
-          this.emit(
-            'error',
-            error instanceof Error ? error : new Error(String(error))
+          const err = error instanceof Error ? error : new Error(String(error));
+          const result = await this.applyStrategy(message, err, () =>
+            handler(message),
           );
+          if (!result.handled) {
+            this.logger.error('Error processing message', {
+              topic: payload.topic,
+              partition: payload.partition,
+              offset: payload.message.offset,
+              error: err.message,
+            });
+
+            this.emit('error', err);
+          }
         }
       },
     });
@@ -258,17 +261,26 @@ export class KafkaConsumer<T = unknown> extends BaseConsumer<T> {
             await payload.commitOffsetsIfNecessary();
           }
         } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          // Kafka batch is offset-based: failure is all-or-nothing. Apply the
+          // strategy to the first message as the batch representative.
+          const representative = messages[0];
+          if (representative) {
+            const result = await this.applyStrategy(representative, err, () =>
+              handler(messages),
+            );
+            if (result.handled) {
+              return;
+            }
+          }
           this.logger.error('Error processing batch', {
             topic: payload.batch.topic,
             partition: payload.batch.partition,
             count: messages.length,
-            error: error instanceof Error ? error.message : String(error),
+            error: err.message,
           });
 
-          this.emit(
-            'error',
-            error instanceof Error ? error : new Error(String(error))
-          );
+          this.emit('error', err);
         }
       },
     });

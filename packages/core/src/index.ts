@@ -29,3 +29,6 @@ export * from './serialization/index.js';
 
 // Re-export base classes
 export * from './base/index.js';
+
+// Re-export retry strategies (opt-in pluggable consumer error handling)
+export * from './strategies/index.js';

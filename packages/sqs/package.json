@@ -1,6 +1,6 @@
 {
   "name": "@anyq/sqs",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AWS SQS adapter for anyq",
   "type": "module",
   "main": "./dist/index.js",

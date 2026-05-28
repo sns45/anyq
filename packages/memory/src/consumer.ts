@@ -55,6 +55,13 @@ export class MemoryConsumer<T = unknown> extends BaseConsumer<T> {
   private readonly maxDeliveryAttempts: number;
   private pollInterval: ReturnType<typeof setInterval> | null = null;
   private running = false;
+  private parkTimers: Set<ReturnType<typeof setTimeout>> = new Set();
+
+  // Memory adapter supports scheduled delivery natively via setTimeout
+  // re-enqueue (see parkMessage below).
+  protected get supportsNativeDelay(): boolean {
+    return true;
+  }
 
   constructor(config: MemoryQueueConfig) {
     super(config);
@@ -118,9 +125,86 @@ export class MemoryConsumer<T = unknown> extends BaseConsumer<T> {
       this.pollInterval = null;
     }
 
+    for (const timer of this.parkTimers) {
+      clearTimeout(timer);
+    }
+    this.parkTimers.clear();
+
     this.queue = null;
     this._connected = false;
     this.logger.info('Memory consumer disconnected');
+  }
+
+  /**
+   * Native dead-letter for memory: route via the existing MemoryQueue.deadLetter()
+   * path so DLQ headers (x-original-queue, x-death-reason, ...) are preserved.
+   */
+  protected override async deadLetterMessage(
+    message: IMessage<T>,
+    reason: string,
+  ): Promise<void> {
+    const stored = message.raw as StoredMessage<T> | undefined;
+    if (this.queue && this.dlq && stored) {
+      this.queue.deadLetter(stored.id, this.dlq, new Error(reason));
+      this.logger.warn('Message dead-lettered', {
+        messageId: message.id,
+        reason,
+      });
+      return;
+    }
+    // No DLQ configured: drop without requeue.
+    this.logger.warn('No DLQ configured; dropping message', {
+      messageId: message.id,
+      reason,
+    });
+    await message.nack(false);
+  }
+
+  /**
+   * Native park for memory: re-enqueue after `delayMs` via setTimeout.
+   * The message body is re-published to the same queue so it gets a fresh
+   * delivery attempt counter for the next pickup.
+   */
+  protected override async parkMessage(
+    message: IMessage<T>,
+    delayMs: number,
+  ): Promise<void> {
+    const queue = this.queue;
+    if (!queue) {
+      this.logger.warn('parkMessage called without a connected queue', {
+        messageId: message.id,
+      });
+      await message.nack(false);
+      return;
+    }
+
+    // Remove the message from the processing map so it doesn't sit there.
+    const stored = message.raw as StoredMessage<T> | undefined;
+    if (stored) {
+      queue.ack(stored.id);
+    }
+
+    const body = message.body;
+    const key = message.key;
+    const headers = { ...message.headers };
+
+    const timer = setTimeout(() => {
+      this.parkTimers.delete(timer);
+      try {
+        queue.enqueue(body, { key, headers });
+      } catch (err) {
+        this.logger.error('Failed to re-enqueue parked message', {
+          messageId: message.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }, delayMs);
+
+    this.parkTimers.add(timer);
+    this.logger.debug('Message parked for redelivery', {
+      messageId: message.id,
+      delayMs,
+    });
   }
 
   /**
@@ -158,27 +242,28 @@ export class MemoryConsumer<T = unknown> extends BaseConsumer<T> {
           await message.ack();
         }
       } catch (error) {
-        this.logger.error('Error processing message', {
-          messageId: stored.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-
-        this.emit('error', error instanceof Error ? error : new Error(String(error)));
-
-        // Check if we should send to DLQ
-        if (stored.deliveryAttempt >= this.maxDeliveryAttempts && this.dlq) {
-          this.queue.deadLetter(
-            stored.id,
-            this.dlq,
-            error instanceof Error ? error : new Error(String(error))
-          );
-          this.logger.warn('Message sent to DLQ', {
+        const err = error instanceof Error ? error : new Error(String(error));
+        const result = await this.applyStrategy(message, err, () =>
+          handler(message),
+        );
+        if (!result.handled) {
+          this.logger.error('Error processing message', {
             messageId: stored.id,
-            attempts: stored.deliveryAttempt,
+            error: err.message,
           });
-        } else {
-          // Requeue for retry
-          await message.nack(true);
+
+          this.emit('error', err);
+
+          // Legacy behaviour: DLQ after maxDeliveryAttempts; otherwise requeue.
+          if (stored.deliveryAttempt >= this.maxDeliveryAttempts && this.dlq) {
+            this.queue.deadLetter(stored.id, this.dlq, err);
+            this.logger.warn('Message sent to DLQ', {
+              messageId: stored.id,
+              attempts: stored.deliveryAttempt,
+            });
+          } else {
+            await message.nack(true);
+          }
         }
       }
     };
@@ -225,16 +310,26 @@ export class MemoryConsumer<T = unknown> extends BaseConsumer<T> {
           }
         }
       } catch (error) {
-        this.logger.error('Error processing batch', {
-          count: messages.length,
-          error: error instanceof Error ? error.message : String(error),
-        });
-
-        this.emit('error', error instanceof Error ? error : new Error(String(error)));
-
-        // Nack all messages in batch
+        const err = error instanceof Error ? error : new Error(String(error));
+        // Memory supports per-message ack, so apply the strategy per message.
+        let anyUnhandled = false;
         for (const message of messages) {
-          await message.nack(true);
+          const result = await this.applyStrategy(message, err, () =>
+            handler([message]),
+          );
+          if (!result.handled) {
+            anyUnhandled = true;
+          }
+        }
+        if (anyUnhandled) {
+          this.logger.error('Error processing batch', {
+            count: messages.length,
+            error: err.message,
+          });
+          this.emit('error', err);
+          for (const message of messages) {
+            await message.nack(true);
+          }
         }
       }
     };
