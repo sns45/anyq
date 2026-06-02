@@ -73,6 +73,32 @@ interface RabbitMQConfig {
 - Automatic reconnection
 - Dead letter queues
 
+## Retry strategies (0.3.0)
+
+This adapter participates in the opt-in pluggable retry strategies from `@anyq/core`. Pass a strategy via `BaseQueueConfig.strategy` and `RabbitMQConsumer.applyStrategy()` takes over per-message error handling; omit it and the legacy catch behaviour (log only; message stays unacked) runs unchanged.
+
+| Capability | Support |
+|---|---|
+| `supportsNativeDelay` | **false** (this release) |
+| `park` | downgrades to in-process retry with a `warn` log, capped by `maxAttempts`. The broker-native TTL+DLX implementation is a follow-up |
+| `deadLetterMessage` | default (`nack(false)` → reject without requeue). Combine with a per-queue `x-dead-letter-exchange` for routing |
+
+> Behaviour change (0.3.0): `message.nack(false)` now actually rejects without requeue. Prior to 0.3.0, `onNack` ignored its `requeue` parameter and always requeued — dead-lettered messages would redeliver indefinitely. Code that relied on the old behaviour should pass `nack(true)` explicitly.
+
+```typescript
+import { retryThenDeadLetter } from '@anyq/core';
+
+const consumer = new RabbitMQConsumer({
+  connection: { url: 'amqp://localhost:5672' },
+  queue: { name: 'orders', durable: true },
+  exchange: { name: 'orders-ex', type: 'direct', durable: true },
+  bindingKey: 'orders',
+  strategy: retryThenDeadLetter({ maxAttempts: 5 }),
+});
+```
+
+See `@anyq/core` for the full strategy catalogue.
+
 ## License
 
 MIT

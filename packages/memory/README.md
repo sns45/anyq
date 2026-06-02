@@ -62,6 +62,28 @@ interface MemoryQueueConfig {
 - Message persistence during session
 - Batch publishing
 
+## Retry strategies (0.3.0)
+
+This adapter participates in the opt-in pluggable retry strategies from `@anyq/core`. Pass a strategy via `BaseQueueConfig.strategy` and `MemoryConsumer.applyStrategy()` takes over per-message error handling; omit it and the legacy DLQ-after-`maxDeliveryAttempts` path runs unchanged.
+
+| Capability | Support |
+|---|---|
+| `supportsNativeDelay` | **true** |
+| Native `park` | `setTimeout` re-enqueue onto the same queue |
+| Native `deadLetterMessage` | routes via the existing `MemoryQueue.deadLetter()` so `x-death-reason` / `x-original-queue` headers are preserved |
+
+```typescript
+import { retryThenDeadLetter } from '@anyq/core';
+
+const consumer = new MemoryConsumer({
+  driver: 'memory',
+  queueName: 'orders',
+  strategy: retryThenDeadLetter({ maxAttempts: 5 }),
+});
+```
+
+See `@anyq/core` for the full strategy catalogue and the `apps/examples/retry-strategies` workspace for runnable demos.
+
 ## License
 
 MIT

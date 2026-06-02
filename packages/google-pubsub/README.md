@@ -90,6 +90,28 @@ Uses Google Cloud Application Default Credentials (ADC):
 - Or provide `keyFilename` in config
 - Or use GCE/GKE default service account
 
+## Retry strategies (0.3.0)
+
+This adapter participates in the opt-in pluggable retry strategies from `@anyq/core`. Pass a strategy via `BaseQueueConfig.strategy` and `GooglePubSubConsumer.applyStrategy()` takes over per-message error handling; omit it and the legacy catch behaviour (log; subscription redelivers based on its retry policy) runs unchanged.
+
+| Capability | Support |
+|---|---|
+| `supportsNativeDelay` | **false** (this release) |
+| `park` | downgrades to in-process retry with a `warn` log, capped by `maxAttempts`. The re-publish-with-delay implementation is a follow-up |
+| `deadLetterMessage` | default (`nack(false)`). Configure a `deadLetterPolicy` on the subscription if you want messages routed to a dedicated dead-letter topic |
+
+```typescript
+import { retryThenDeadLetter } from '@anyq/core';
+
+const consumer = new GooglePubSubConsumer({
+  projectId: 'my-project',
+  subscription: { name: 'orders-sub' },
+  strategy: retryThenDeadLetter({ maxAttempts: 5 }),
+});
+```
+
+See `@anyq/core` for the full strategy catalogue.
+
 ## License
 
 MIT

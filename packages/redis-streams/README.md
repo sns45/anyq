@@ -70,6 +70,30 @@ interface RedisStreamsConfig {
 - Exactly-once delivery semantics
 - Stream trimming (MAXLEN)
 
+## Retry strategies (0.3.0)
+
+This adapter participates in the opt-in pluggable retry strategies from `@anyq/core`. Pass a strategy via `BaseQueueConfig.strategy` and `RedisStreamsConsumer.applyStrategy()` takes over per-message error handling; omit it and the legacy catch behaviour (log; message becomes pending and is re-claimed by `XAUTOCLAIM`) runs unchanged.
+
+| Capability | Support |
+|---|---|
+| `supportsNativeDelay` | **false** (this release) |
+| `park` | downgrades to in-process retry with a `warn` log, capped by `maxAttempts`. The parking sorted-set implementation is a follow-up |
+| `deadLetterMessage` | default (`nack(false)` → `XACK`, removing the entry from the pending list). For a real DLQ, publish to a `<stream>.dlq` from your handler |
+
+```typescript
+import { retryThenDeadLetter } from '@anyq/core';
+
+const consumer = new RedisStreamsConsumer({
+  driver: 'redis-streams',
+  streamName: 'orders',
+  consumerGroup: { groupName: 'order-processors', consumerName: 'consumer-1' },
+  redis: { host: 'localhost', port: 6379 },
+  strategy: retryThenDeadLetter({ maxAttempts: 5 }),
+});
+```
+
+See `@anyq/core` for the full strategy catalogue.
+
 ## License
 
 MIT

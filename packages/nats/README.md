@@ -77,6 +77,31 @@ interface NatsConfig {
 - Work queues (load balancing)
 - Message replay
 
+## Retry strategies (0.3.0)
+
+This adapter participates in the opt-in pluggable retry strategies from `@anyq/core`. Pass a strategy via `BaseQueueConfig.strategy` and `NATSConsumer.applyStrategy()` takes over per-message error handling; omit it and the legacy catch behaviour (log; broker redelivers based on `maxDeliver` / `ackWait`) runs unchanged.
+
+| Capability | Support |
+|---|---|
+| `supportsNativeDelay` | **true** |
+| Native `park` | JetStream `nak(delayMs)` — message is re-delivered after `delayMs` without consuming an ack-wait |
+| `deadLetterMessage` | default (`nack(false)`) |
+
+> Behaviour change (0.3.0): `message.nack(false)` now calls `jsMsg.term()` (terminate without redelivery) instead of ignoring the parameter and calling `nak()`. Previously, dead-lettered messages would be redelivered by JetStream regardless. Code that relied on the old (incorrect) behaviour should pass `nack(true)` explicitly.
+
+```typescript
+import { retryThenDeadLetter } from '@anyq/core';
+
+const consumer = new NATSConsumer({
+  connection: { servers: 'nats://localhost:4222' },
+  jetstream: { stream: 'ORDERS', subjects: ['orders'] },
+  subject: 'orders',
+  strategy: retryThenDeadLetter({ maxAttempts: 5 }),
+});
+```
+
+See `@anyq/core` for the full strategy catalogue.
+
 ## License
 
 MIT
