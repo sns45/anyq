@@ -24,6 +24,7 @@ import {
   type BatchMessageHandler,
   type SubscribeOptions,
   type HealthStatus,
+  type IMessage,
   ConnectionError,
   generateUUID,
 } from '@anyq/core';
@@ -54,6 +55,38 @@ export class NATSConsumer<T = unknown> extends BaseConsumer<T> {
   private readonly sc = StringCodec();
   private processingLoop: Promise<void> | null = null;
   private shouldStop = false;
+  private readonly jsMsgByMessageId = new WeakMap<IMessage<T>, JsMsg>();
+
+  // NATS JetStream supports scheduled redelivery via nak(delay).
+  protected get supportsNativeDelay(): boolean {
+    return true;
+  }
+
+  /**
+   * Native park: use JetStream nak(delay) to redeliver after `delayMs`.
+   */
+  protected override async parkMessage(
+    message: IMessage<T>,
+    delayMs: number,
+  ): Promise<void> {
+    const jsMsg = this.jsMsgByMessageId.get(message);
+    if (!jsMsg) {
+      this.logger.warn('parkMessage missing JsMsg; falling back to nack', {
+        messageId: message.id,
+      });
+      await message.nack(true);
+      return;
+    }
+    try {
+      jsMsg.nak(delayMs);
+    } catch (err) {
+      this.logger.error('NATS nak(delay) failed; falling back to nack', {
+        messageId: message.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      await message.nack(true);
+    }
+  }
 
   constructor(config: NATSConsumerConfigType) {
     super(config);
@@ -341,12 +374,18 @@ export class NATSConsumer<T = unknown> extends BaseConsumer<T> {
           continue;
         }
 
+        const message = this.convertMessage(jsMsg);
         try {
-          const message = this.convertMessage(jsMsg);
           await handler(message);
         } catch (error) {
-          this.logger.error('Error processing message', { error });
-          // Message will be redelivered based on maxDeliver config
+          const err = error instanceof Error ? error : new Error(String(error));
+          const result = await this.applyStrategy(message, err, () =>
+            handler(message),
+          );
+          if (!result.handled) {
+            this.logger.error('Error processing message', { error });
+            // Legacy: message will be redelivered based on maxDeliver config
+          }
         }
       }
     } catch (error) {
@@ -389,11 +428,23 @@ export class NATSConsumer<T = unknown> extends BaseConsumer<T> {
         // Process batch if full or timeout reached
         if (batch.length >= batchSize || Date.now() - batchStart > batchTimeout) {
           if (batch.length > 0) {
+            const messages = batch.map(msg => this.convertMessage(msg));
             try {
-              const messages = batch.map(msg => this.convertMessage(msg));
               await handler(messages);
             } catch (error) {
-              this.logger.error('Error processing batch', { error });
+              const err = error instanceof Error ? error : new Error(String(error));
+              let anyUnhandled = false;
+              for (const message of messages) {
+                const result = await this.applyStrategy(message, err, () =>
+                  handler([message]),
+                );
+                if (!result.handled) {
+                  anyUnhandled = true;
+                }
+              }
+              if (anyUnhandled) {
+                this.logger.error('Error processing batch', { error });
+              }
             }
             batch = [];
             batchStart = Date.now();
@@ -403,11 +454,23 @@ export class NATSConsumer<T = unknown> extends BaseConsumer<T> {
 
       // Process remaining messages
       if (batch.length > 0) {
+        const messages = batch.map(msg => this.convertMessage(msg));
         try {
-          const messages = batch.map(msg => this.convertMessage(msg));
           await handler(messages);
         } catch (error) {
-          this.logger.error('Error processing final batch', { error });
+          const err = error instanceof Error ? error : new Error(String(error));
+          let anyUnhandled = false;
+          for (const message of messages) {
+            const result = await this.applyStrategy(message, err, () =>
+              handler([message]),
+            );
+            if (!result.handled) {
+              anyUnhandled = true;
+            }
+          }
+          if (anyUnhandled) {
+            this.logger.error('Error processing final batch', { error });
+          }
         }
       }
     } catch (error) {
@@ -447,7 +510,7 @@ export class NATSConsumer<T = unknown> extends BaseConsumer<T> {
       }
     }
 
-    return createMessage<T>({
+    const message = createMessage<T>({
       id: messageId,
       body: parsed.body,
       headers,
@@ -468,9 +531,17 @@ export class NATSConsumer<T = unknown> extends BaseConsumer<T> {
         jsMsg.ack();
         this.logger.debug('Message acknowledged', { messageId });
       },
-      onNack: async () => {
-        jsMsg.nak();
-        this.logger.debug('Message negatively acknowledged', { messageId });
+      onNack: async (requeue = true) => {
+        if (requeue) {
+          jsMsg.nak();
+        } else {
+          // requeue=false → terminate the message (no redelivery).
+          jsMsg.term();
+        }
+        this.logger.debug('Message negatively acknowledged', {
+          messageId,
+          requeue,
+        });
       },
       onExtendDeadline: async (_seconds: number) => {
         // NATS uses working indicator to extend processing time
@@ -478,6 +549,8 @@ export class NATSConsumer<T = unknown> extends BaseConsumer<T> {
         this.logger.debug('Message deadline extended', { messageId });
       },
     });
+    this.jsMsgByMessageId.set(message, jsMsg);
+    return message;
   }
 
   /**

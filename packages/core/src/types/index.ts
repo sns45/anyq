@@ -13,6 +13,8 @@ export type {
   Logger,
   LogConfig,
   BaseQueueConfig,
+  BaseRetryDecision,
+  BaseRetryStrategy,
 } from './config.js';
 
 export {

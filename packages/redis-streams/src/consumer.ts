@@ -201,17 +201,20 @@ export class RedisStreamsConsumer<T = unknown> extends BaseConsumer<T> {
               await message.ack();
             }
           } catch (error) {
-            this.logger.error('Error processing message', {
-              messageId: entry.id,
-              error: error instanceof Error ? error.message : String(error),
-            });
-
-            this.emit(
-              'error',
-              error instanceof Error ? error : new Error(String(error))
+            const err = error instanceof Error ? error : new Error(String(error));
+            const result = await this.applyStrategy(message, err, () =>
+              handler(message),
             );
+            if (!result.handled) {
+              this.logger.error('Error processing message', {
+                messageId: entry.id,
+                error: err.message,
+              });
 
-            // Let the message become pending for reclaim
+              this.emit('error', err);
+
+              // Let the message become pending for reclaim
+            }
           }
         }
       } catch (error) {
@@ -268,15 +271,25 @@ export class RedisStreamsConsumer<T = unknown> extends BaseConsumer<T> {
             }
           }
         } catch (error) {
-          this.logger.error('Error processing batch', {
-            count: messages.length,
-            error: error instanceof Error ? error.message : String(error),
-          });
+          const err = error instanceof Error ? error : new Error(String(error));
+          // Redis streams supports per-message ack; apply strategy per message.
+          let anyUnhandled = false;
+          for (const message of messages) {
+            const result = await this.applyStrategy(message, err, () =>
+              handler([message]),
+            );
+            if (!result.handled) {
+              anyUnhandled = true;
+            }
+          }
+          if (anyUnhandled) {
+            this.logger.error('Error processing batch', {
+              count: messages.length,
+              error: err.message,
+            });
 
-          this.emit(
-            'error',
-            error instanceof Error ? error : new Error(String(error))
-          );
+            this.emit('error', err);
+          }
         }
       } catch (error) {
         this.logger.error('Error in batch poll loop', {
@@ -470,10 +483,16 @@ export class RedisStreamsConsumer<T = unknown> extends BaseConsumer<T> {
             await message.ack();
           }
         } catch (error) {
-          this.logger.error('Error processing pending message', {
-            messageId: id,
-            error: error instanceof Error ? error.message : String(error),
-          });
+          const err = error instanceof Error ? error : new Error(String(error));
+          const result = await this.applyStrategy(message, err, () =>
+            handler(message),
+          );
+          if (!result.handled) {
+            this.logger.error('Error processing pending message', {
+              messageId: id,
+              error: err.message,
+            });
+          }
         }
       }
     } catch (error) {

@@ -75,6 +75,10 @@ interface SNSConfig {
 
 SNS is a producer-only service. Messages are delivered to subscribers (SQS, Lambda, HTTP, etc.) configured in the AWS Console.
 
+## Retry strategies (0.3.0)
+
+Pluggable retry strategies from `@anyq/core` are a **consumer-side** feature. SNS has no consumer, so the `strategy` config field has no effect here. If you need per-error handling for SNS-delivered messages, apply a strategy on the downstream `@anyq/sqs` consumer or other subscribing service.
+
 ## License
 
 MIT

@@ -196,12 +196,18 @@ export class RabbitMQConsumer<T = unknown> extends BaseConsumer<T> {
           return;
         }
 
+        const message = this.convertMessage(msg);
         try {
-          const message = this.convertMessage(msg);
           await handler(message);
         } catch (error) {
-          this.logger.error('Error processing message', { error });
-          // Message will be nacked by the handler or handled by the adapter
+          const err = error instanceof Error ? error : new Error(String(error));
+          const result = await this.applyStrategy(message, err, () =>
+            handler(message),
+          );
+          if (!result.handled) {
+            this.logger.error('Error processing message', { error });
+            // Legacy: message will be nacked by the handler or handled by the adapter
+          }
         }
       },
       {
@@ -252,14 +258,27 @@ export class RabbitMQConsumer<T = unknown> extends BaseConsumer<T> {
         batchTimer = null;
       }
 
+      const messages = currentBatch.map(msg => this.convertMessage(msg));
       try {
-        const messages = currentBatch.map(msg => this.convertMessage(msg));
         await handler(messages);
       } catch (error) {
-        this.logger.error('Error processing batch', { error });
-        // Nack all messages in the batch
-        for (const msg of currentBatch) {
-          this.channel?.nack(msg, false, true);
+        const err = error instanceof Error ? error : new Error(String(error));
+        // RabbitMQ supports per-message ack; apply strategy per message.
+        let anyUnhandled = false;
+        for (const message of messages) {
+          const result = await this.applyStrategy(message, err, () =>
+            handler([message]),
+          );
+          if (!result.handled) {
+            anyUnhandled = true;
+          }
+        }
+        if (anyUnhandled) {
+          this.logger.error('Error processing batch', { error });
+          // Legacy: nack all in-flight messages with requeue.
+          for (const msg of currentBatch) {
+            this.channel?.nack(msg, false, true);
+          }
         }
       }
     };
@@ -359,9 +378,13 @@ export class RabbitMQConsumer<T = unknown> extends BaseConsumer<T> {
         this.channel?.ack(msg);
         this.logger.debug('Message acknowledged', { messageId, deliveryTag });
       },
-      onNack: async () => {
-        this.channel?.nack(msg, false, true); // Requeue
-        this.logger.debug('Message negatively acknowledged', { messageId, deliveryTag });
+      onNack: async (requeue = true) => {
+        this.channel?.nack(msg, false, requeue);
+        this.logger.debug('Message negatively acknowledged', {
+          messageId,
+          deliveryTag,
+          requeue,
+        });
       },
       onExtendDeadline: async (_seconds: number) => {
         // RabbitMQ doesn't support deadline extension

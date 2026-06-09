@@ -187,12 +187,18 @@ export class PubSubConsumer<T = unknown> extends BaseConsumer<T> {
         return;
       }
 
+      const convertedMessage = this.convertMessage(message);
       try {
-        const convertedMessage = this.convertMessage(message);
         await handler(convertedMessage);
       } catch (error) {
-        this.logger.error('Error processing message', { error });
-        // Don't ack - message will be redelivered
+        const err = error instanceof Error ? error : new Error(String(error));
+        const result = await this.applyStrategy(convertedMessage, err, () =>
+          handler(convertedMessage),
+        );
+        if (!result.handled) {
+          this.logger.error('Error processing message', { error });
+          // Legacy: don't ack - message will be redelivered
+        }
       }
     });
 
@@ -233,14 +239,26 @@ export class PubSubConsumer<T = unknown> extends BaseConsumer<T> {
         batchTimer = null;
       }
 
+      const messages = currentBatch.map(msg => this.convertMessage(msg));
       try {
-        const messages = currentBatch.map(msg => this.convertMessage(msg));
         await handler(messages);
       } catch (error) {
-        this.logger.error('Error processing batch', { error });
-        // Nack all messages in the batch
-        for (const msg of currentBatch) {
-          msg.nack();
+        const err = error instanceof Error ? error : new Error(String(error));
+        // Pub/Sub supports per-message ack; apply strategy per message.
+        let anyUnhandled = false;
+        for (const message of messages) {
+          const result = await this.applyStrategy(message, err, () =>
+            handler([message]),
+          );
+          if (!result.handled) {
+            anyUnhandled = true;
+          }
+        }
+        if (anyUnhandled) {
+          this.logger.error('Error processing batch', { error });
+          for (const msg of currentBatch) {
+            msg.nack();
+          }
         }
       }
     };

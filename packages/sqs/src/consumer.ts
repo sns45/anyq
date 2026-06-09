@@ -8,6 +8,7 @@ import {
   ReceiveMessageCommand,
   DeleteMessageCommand,
   ChangeMessageVisibilityCommand,
+  SendMessageCommand,
   type Message as SQSMessage,
 } from '@aws-sdk/client-sqs';
 import {
@@ -62,10 +63,54 @@ export class SQSConsumer<T = unknown> extends BaseConsumer<T> {
   private running = false;
   private pollingPromise: Promise<void> | null = null;
 
+  // SQS supports scheduled delivery natively via SendMessage DelaySeconds (0-900s).
+  protected get supportsNativeDelay(): boolean {
+    return true;
+  }
+
   constructor(config: SQSConfig) {
     super(config);
     this.queueUrl = config.queueUrl;
     this.consumerOptions = config.consumer ?? {};
+  }
+
+  /**
+   * Native park: re-publish the message to the same queue with a DelaySeconds
+   * value, then delete the in-flight copy. SQS caps DelaySeconds at 900.
+   */
+  protected override async parkMessage(
+    message: IMessage<T>,
+    delayMs: number,
+  ): Promise<void> {
+    if (!this.client) {
+      this.logger.warn('parkMessage called without a connected SQS client', {
+        messageId: message.id,
+      });
+      await message.nack(false);
+      return;
+    }
+
+    const delaySeconds = Math.min(900, Math.max(0, Math.ceil(delayMs / 1000)));
+    const body = this.serializer.serialize(message.body);
+
+    try {
+      await this.client.send(
+        new SendMessageCommand({
+          QueueUrl: this.queueUrl,
+          MessageBody: typeof body === 'string' ? body : body.toString(),
+          DelaySeconds: delaySeconds,
+        }),
+      );
+      // Delete the original in-flight copy so SQS doesn't redeliver after
+      // the visibility timeout.
+      await message.ack();
+    } catch (err) {
+      this.logger.error('Failed to park SQS message; returning to queue', {
+        messageId: message.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      await message.nack(true);
+    }
   }
 
   /**
@@ -206,15 +251,18 @@ export class SQSConsumer<T = unknown> extends BaseConsumer<T> {
                 await message.ack();
               }
             } catch (error) {
-              this.logger.error('Error processing message', {
-                messageId: sqsMessage.MessageId,
-                error: error instanceof Error ? error.message : String(error),
-              });
-
-              this.emit(
-                'error',
-                error instanceof Error ? error : new Error(String(error))
+              const err = error instanceof Error ? error : new Error(String(error));
+              const result = await this.applyStrategy(message, err, () =>
+                handler(message),
               );
+              if (!result.handled) {
+                this.logger.error('Error processing message', {
+                  messageId: sqsMessage.MessageId,
+                  error: err.message,
+                });
+
+                this.emit('error', err);
+              }
             }
           }
         }
@@ -266,15 +314,25 @@ export class SQSConsumer<T = unknown> extends BaseConsumer<T> {
               await Promise.all(messages.map((m) => m.ack()));
             }
           } catch (error) {
-            this.logger.error('Error processing batch', {
-              count: messages.length,
-              error: error instanceof Error ? error.message : String(error),
-            });
+            const err = error instanceof Error ? error : new Error(String(error));
+            // SQS supports per-message ack; apply strategy per message.
+            let anyUnhandled = false;
+            for (const message of messages) {
+              const result = await this.applyStrategy(message, err, () =>
+                handler([message]),
+              );
+              if (!result.handled) {
+                anyUnhandled = true;
+              }
+            }
+            if (anyUnhandled) {
+              this.logger.error('Error processing batch', {
+                count: messages.length,
+                error: err.message,
+              });
 
-            this.emit(
-              'error',
-              error instanceof Error ? error : new Error(String(error))
-            );
+              this.emit('error', err);
+            }
           }
         }
       } catch (error) {

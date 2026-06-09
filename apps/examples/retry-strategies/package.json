@@ -1,0 +1,26 @@
+{
+  "name": "@anyq/example-retry-strategies",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Runnable examples + unit/integration tests for @anyq/core pluggable retry strategies",
+  "type": "module",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "test": "bun test",
+    "test:unit": "bun test test/unit",
+    "test:integration": "bun test test/integration",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anyq/core": "workspace:*",
+    "@anyq/memory": "workspace:*"
+  },
+  "devDependencies": {
+    "@anyq/redis-streams": "workspace:*",
+    "@anyq/rabbitmq": "workspace:*",
+    "@anyq/nats": "workspace:*",
+    "@anyq/kafka": "workspace:*",
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.3.0"
+  }
+}

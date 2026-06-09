@@ -145,12 +145,18 @@ export class ServiceBusConsumer<T = unknown> extends BaseConsumer<T> {
         return;
       }
 
+      const message = this.convertMessage(sbMessage);
       try {
-        const message = this.convertMessage(sbMessage);
         await handler(message);
       } catch (error) {
-        this.logger.error('Error processing message', { error });
-        // Message will be abandoned/dead-lettered by the SDK based on settings
+        const err = error instanceof Error ? error : new Error(String(error));
+        const result = await this.applyStrategy(message, err, () =>
+          handler(message),
+        );
+        if (!result.handled) {
+          this.logger.error('Error processing message', { error });
+          // Legacy: message will be abandoned/dead-lettered by the SDK based on settings
+        }
       }
     };
 
@@ -200,14 +206,26 @@ export class ServiceBusConsumer<T = unknown> extends BaseConsumer<T> {
           });
 
           if (sbMessages.length > 0) {
+            const messages = sbMessages.map(msg => this.convertMessage(msg));
             try {
-              const messages = sbMessages.map(msg => this.convertMessage(msg));
               await handler(messages);
             } catch (error) {
-              this.logger.error('Error processing batch', { error });
-              // Abandon all messages
-              for (const msg of sbMessages) {
-                await this.receiver?.abandonMessage(msg);
+              const err = error instanceof Error ? error : new Error(String(error));
+              // Service Bus supports per-message ack; apply strategy per message.
+              let anyUnhandled = false;
+              for (const message of messages) {
+                const result = await this.applyStrategy(message, err, () =>
+                  handler([message]),
+                );
+                if (!result.handled) {
+                  anyUnhandled = true;
+                }
+              }
+              if (anyUnhandled) {
+                this.logger.error('Error processing batch', { error });
+                for (const msg of sbMessages) {
+                  await this.receiver?.abandonMessage(msg);
+                }
               }
             }
           }

@@ -31,6 +31,19 @@ import { CircuitBreaker } from '../middleware/circuit-breaker.js';
 import { withRetry } from '../middleware/retry.js';
 import type { ISerializer } from '../serialization/types.js';
 import { JsonSerializer } from '../serialization/json.js';
+import type {
+  RetryDecision,
+  RetryStrategy,
+  RetryStrategyContext,
+} from '../strategies/types.js';
+import { BACKPRESSURE_PAUSE_STRATEGY_NAME } from '../strategies/types.js';
+
+/**
+ * Sleep for the given milliseconds.
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Create a message instance from parameters
@@ -198,6 +211,18 @@ export class EventEmitter<T = unknown> {
 }
 
 /**
+ * Result returned by {@link BaseConsumer.applyStrategy}.
+ *
+ * - `handled: false` means no `strategy` was configured; the adapter should
+ *   fall through to its legacy catch-block behaviour.
+ * - `handled: true` means the strategy ran to completion (possibly after an
+ *   in-process retry loop).
+ */
+export interface ApplyStrategyResult {
+  handled: boolean;
+}
+
+/**
  * Base consumer class
  */
 export abstract class BaseConsumer<T = unknown>
@@ -207,10 +232,271 @@ export abstract class BaseConsumer<T = unknown>
   protected serializer: ISerializer<T>;
   protected _paused = false;
   protected eventEmitter = new EventEmitter<T>();
+  private _backpressureResumeTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: BaseQueueConfig, serializer?: ISerializer<T>) {
     super(config);
     this.serializer = serializer ?? (new JsonSerializer() as ISerializer<T>);
+  }
+
+  /**
+   * Whether this adapter can natively schedule delayed redelivery (the `park`
+   * decision). Override in adapter subclasses; defaults to `false`.
+   *
+   * When `false`, a `park` decision in {@link applyStrategy} downgrades to an
+   * in-process `retry` with the same delay and logs a warning.
+   */
+  protected get supportsNativeDelay(): boolean {
+    return false;
+  }
+
+  /**
+   * Adapter-provided dead-letter hook. Subclasses MAY override to route
+   * messages to a broker-native DLQ (SQS redrive, RabbitMQ DLX, etc.).
+   *
+   * Default implementation logs a warning and calls `nack(false)` to drop
+   * the message without requeue.
+   */
+  protected async deadLetterMessage(
+    message: IMessage<T>,
+    reason: string,
+  ): Promise<void> {
+    this.logger.warn(
+      'No native dead-letter hook; dropping message via nack(false)',
+      { messageId: message.id, reason },
+    );
+    await message.nack(false);
+  }
+
+  /**
+   * Adapter-provided scheduled-retry hook. Subclasses MUST override when
+   * {@link supportsNativeDelay} returns `true`.
+   *
+   * Adapters that do not support native delay can leave this as the default;
+   * {@link applyStrategy} will downgrade `park` to in-process retry instead.
+   */
+  protected async parkMessage(
+    _message: IMessage<T>,
+    _delayMs: number,
+  ): Promise<void> {
+    // Intentionally unreachable: applyStrategy only calls this when
+    // supportsNativeDelay is true. Override in adapter subclasses.
+    throw new Error(
+      'parkMessage() not implemented; override in adapter or set supportsNativeDelay=false',
+    );
+  }
+
+  /**
+   * Resolve the effective maxAttempts for the strategy context.
+   *
+   * Precedence: deadLetterQueue.maxDeliveryAttempts -> retry.maxRetries + 1 ->
+   * DEFAULT_RETRY_CONFIG.maxRetries + 1.
+   *
+   * Strategy-level overrides (e.g. `retryThenDeadLetter({ maxAttempts })`)
+   * take precedence inside the strategy itself.
+   */
+  protected resolveMaxAttempts(): number {
+    const dlqMax = this.config.deadLetterQueue?.maxDeliveryAttempts;
+    if (typeof dlqMax === 'number' && dlqMax > 0) {
+      return dlqMax;
+    }
+    const retryMax = this.config.retry?.maxRetries;
+    if (typeof retryMax === 'number' && retryMax >= 0) {
+      return retryMax + 1;
+    }
+    return DEFAULT_RETRY_CONFIG.maxRetries + 1;
+  }
+
+  /**
+   * Apply the configured retry strategy to a failed message.
+   *
+   * Boundary: the parent {@link BaseAdapter} circuit breaker handles
+   * connection/transport failure; retry strategies handle per-message handler
+   * failure. The two pause mechanisms (open circuit vs. backpressure pause)
+   * are independent, and strategies MUST NOT trip the breaker.
+   *
+   * @param message  - The message whose handler threw.
+   * @param error    - The thrown error (already coerced to Error).
+   * @param reinvoke - Optional re-invocation callback used by the in-process
+   *                   retry loop. If omitted, the `retry` decision falls
+   *                   through to `deadLetter` once attempts are exhausted on
+   *                   the broker side.
+   * @returns `{ handled: false }` when no strategy is configured (the
+   *          adapter's catch block should fall back to legacy behaviour);
+   *          `{ handled: true }` otherwise.
+   */
+  protected async applyStrategy(
+    message: IMessage<T>,
+    error: Error,
+    reinvoke?: () => Promise<void>,
+  ): Promise<ApplyStrategyResult> {
+    const strategy = this.config.strategy as RetryStrategy<T> | undefined;
+    if (!strategy) {
+      return { handled: false };
+    }
+
+    const maxAttempts = this.resolveMaxAttempts();
+    let currentError = error;
+    let currentAttempt = message.deliveryAttempt;
+
+    // The in-process retry loop: a strategy may return `retry` repeatedly
+    // until attempts exhaust, the error becomes non-retryable, or the
+    // strategy returns a non-retry decision.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const ctx: RetryStrategyContext<T> = {
+        message,
+        error: currentError,
+        attempt: currentAttempt,
+        maxAttempts,
+      };
+
+      let decision: RetryDecision;
+      try {
+        decision = await strategy.decide(ctx);
+      } catch (decideErr) {
+        this.logger.error('Retry strategy threw; treating as deadLetter', {
+          strategy: strategy.name,
+          messageId: message.id,
+          error:
+            decideErr instanceof Error ? decideErr.message : String(decideErr),
+        });
+        decision = {
+          action: 'deadLetter',
+          reason:
+            decideErr instanceof Error ? decideErr.message : String(decideErr),
+        };
+      }
+
+      // Emit error event for observability on every non-ack outcome.
+      if (decision.action !== 'ack') {
+        this.emit('error', currentError);
+      }
+
+      switch (decision.action) {
+        case 'ack': {
+          await message.ack();
+          return { handled: true };
+        }
+        case 'requeue': {
+          await message.nack(true);
+          return { handled: true };
+        }
+        case 'fail': {
+          // Rethrow; matches logAndFail semantics.
+          throw currentError;
+        }
+        case 'deadLetter': {
+          await this.deadLetterMessage(message, decision.reason);
+          return { handled: true };
+        }
+        case 'park': {
+          // Backpressure pause runs regardless of native vs downgrade — the
+          // intent is "stop hammering the downstream system" and that holds
+          // whether we re-queue via the broker or retry in-process.
+          if (strategy.name === BACKPRESSURE_PAUSE_STRATEGY_NAME) {
+            await this.pause();
+            if (this._backpressureResumeTimer) {
+              clearTimeout(this._backpressureResumeTimer);
+            }
+            this._backpressureResumeTimer = setTimeout(() => {
+              this._backpressureResumeTimer = null;
+              this.resume().catch((resumeErr: unknown) => {
+                this.logger.error('Failed to resume after backpressure pause', {
+                  error:
+                    resumeErr instanceof Error
+                      ? resumeErr.message
+                      : String(resumeErr),
+                });
+              });
+            }, decision.delayMs);
+          }
+
+          if (this.supportsNativeDelay) {
+            await this.parkMessage(message, decision.delayMs);
+            return { handled: true };
+          }
+
+          // Downgrade: in-process retry after the requested delay, capped by
+          // maxAttempts so a perpetually-failing handler can't spin forever.
+          this.logger.warn(
+            'park requested but adapter has no native delay; downgrading to in-process retry',
+            {
+              strategy: strategy.name,
+              messageId: message.id,
+              delayMs: decision.delayMs,
+            },
+          );
+          if (!reinvoke) {
+            await this.deadLetterMessage(
+              message,
+              'park downgrade requested but no reinvoke callback available',
+            );
+            return { handled: true };
+          }
+          if (currentAttempt >= maxAttempts) {
+            await this.deadLetterMessage(
+              message,
+              'max attempts exceeded (park downgrade)',
+            );
+            return { handled: true };
+          }
+          await sleep(decision.delayMs);
+          try {
+            await reinvoke();
+            await message.ack();
+            return { handled: true };
+          } catch (reErr) {
+            currentError =
+              reErr instanceof Error ? reErr : new Error(String(reErr));
+            currentAttempt += 1;
+            continue;
+          }
+        }
+        case 'retry': {
+          if (!reinvoke) {
+            // Without a reinvoke callback, fall through to deadLetter on
+            // exhaustion or just dead-letter immediately.
+            this.logger.warn(
+              'retry requested but no reinvoke callback supplied; dead-lettering',
+              {
+                strategy: strategy.name,
+                messageId: message.id,
+              },
+            );
+            await this.deadLetterMessage(message, 'retry without reinvoke');
+            return { handled: true };
+          }
+          if (currentAttempt >= maxAttempts) {
+            await this.deadLetterMessage(message, 'max attempts exceeded');
+            return { handled: true };
+          }
+          await sleep(decision.delayMs);
+          try {
+            await reinvoke();
+            await message.ack();
+            return { handled: true };
+          } catch (reErr) {
+            currentError =
+              reErr instanceof Error ? reErr : new Error(String(reErr));
+            currentAttempt += 1;
+            continue;
+          }
+        }
+        default: {
+          // Forward-compatible: future minor versions MAY add RetryDecision
+          // variants. Treat unknown actions as deadLetter so library updates
+          // don't break adapters at runtime.
+          this.logger.warn('Unknown retry decision; dead-lettering', {
+            strategy: strategy.name,
+            messageId: message.id,
+            action: (decision as { action?: string }).action,
+          });
+          await this.deadLetterMessage(message, 'unknown decision');
+          return { handled: true };
+        }
+      }
+    }
   }
 
   // Event emitter methods

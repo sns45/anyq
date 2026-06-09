@@ -81,6 +81,28 @@ interface AzureServiceBusConfig {
 - Auto-lock renewal
 - Message deferral
 
+## Retry strategies (0.3.0)
+
+This adapter participates in the opt-in pluggable retry strategies from `@anyq/core`. Pass a strategy via `BaseQueueConfig.strategy` and `AzureServiceBusConsumer.applyStrategy()` takes over per-message error handling; omit it and the legacy catch behaviour (log; SDK abandons/dead-letters based on settings) runs unchanged.
+
+| Capability | Support |
+|---|---|
+| `supportsNativeDelay` | **false** (this release) |
+| `park` | downgrades to in-process retry with a `warn` log, capped by `maxAttempts`. The `scheduledEnqueueTimeUtc` implementation is a follow-up |
+| `deadLetterMessage` | default (`nack(false)` → message abandoned). Configure the entity's dead-letter sub-queue settings (`maxDeliveryCount`) if you want messages routed to the DLQ |
+
+```typescript
+import { retryThenDeadLetter } from '@anyq/core';
+
+const consumer = new AzureServiceBusConsumer({
+  connectionString: '...',
+  queueName: 'orders',
+  strategy: retryThenDeadLetter({ maxAttempts: 5 }),
+});
+```
+
+See `@anyq/core` for the full strategy catalogue.
+
 ## License
 
 MIT

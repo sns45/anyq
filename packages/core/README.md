@@ -69,6 +69,39 @@ interface IMessage<T = unknown> {
 }
 ```
 
+## Retry Strategies (0.3.0)
+
+Pluggable, per-message error handling for consumers. A `RetryStrategy` maps an `(error, message, attempt)` triple to a decision: `ack`, `retry`, `requeue`, `deadLetter`, `park`, or `fail`. The feature is **opt-in**: when no `strategy` is set on the queue config, every adapter keeps its existing catch-block behavior byte-for-byte.
+
+```typescript
+import {
+  retryThenDeadLetter,
+  logAndSkip,
+  deadLetterImmediate,
+  backpressurePause,
+  custom,
+} from '@anyq/core';
+
+const consumer = new MemoryConsumer({
+  driver: 'memory',
+  queueName: 'orders',
+  // Retry retryable errors with backoff; dead-letter after maxAttempts.
+  strategy: retryThenDeadLetter({ maxAttempts: 5 }),
+});
+```
+
+Built-in factories:
+
+- `retryThenDeadLetter({ maxAttempts?, backoff?, isRetryable? })` -- retry transient infrastructure failures in-process, dead-letter the rest.
+- `deadLetterImmediate()` -- poison messages; no retry.
+- `logAndSkip()` / `logAndFail()` -- ack-and-drop or crash the consumer loop.
+- `backpressurePause({ pauseMs?, isRateLimited? })` -- on rate/quota errors, pause the consumer and resume after a delay.
+- `custom(name, fn)` -- wrap any `(ctx) => RetryDecision` function.
+
+Adapters that natively support delayed redelivery (memory, sqs, nats) honor the `park` action via their broker primitives (setTimeout re-enqueue, SQS `DelaySeconds`, NATS `nak(delay)`). On adapters without native delay, `park` downgrades to in-process retry with a warning.
+
+> Note: future minor versions may add new `RetryDecision` variants. Custom strategies that switch on `decision.action` should include a `default` branch.
+
 ## Adapters
 
 Use @anyq/core with these adapters:
