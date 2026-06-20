@@ -29,7 +29,7 @@ jobs:
       - name: Build
         run: bun run build
 
-      - name: Configure npm auth
+      - name: Configure registry auth
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -37,11 +37,29 @@ jobs:
             echo "::error::NPM_TOKEN secret is not set. Add it with: gh secret set NPM_TOKEN --repo ${{ github.repository }}"
             exit 1
           fi
+
+          # npm reads ~/.npmrc (used by the whoami preflight and `npm view`).
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
 
+          # bun publish does NOT reliably read ~/.npmrc in this version; it
+          # authenticates via bunfig.toml [install.registry]. Append it to the
+          # project bunfig.toml so it is found when publishing from each package
+          # dir. The literal "$NPM_TOKEN" is expanded by bun from the env at
+          # publish time, so the token is never written to disk.
+          {
+            echo ""
+            echo "[install.registry]"
+            echo 'url = "https://registry.npmjs.org"'
+            echo 'token = "$NPM_TOKEN"'
+          } >> bunfig.toml
+
       - name: Verify npm authentication
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          # Fail loudly here rather than letting each publish fail silently.
+          # Early structural check on the token. Note: this validates the npm
+          # auth path; bun's path is validated by the publish step itself, which
+          # now fails the job loudly on any error.
           if ! npm whoami >/dev/null 2>&1; then
             echo "::error::npm authentication failed. The NPM_TOKEN secret is missing, expired, or lacks publish rights to the @anyq scope."
             exit 1
@@ -49,6 +67,8 @@ jobs:
           echo "Authenticated to npm as: $(npm whoami)"
 
       - name: Publish all packages
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -uo pipefail
 
