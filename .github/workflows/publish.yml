@@ -30,10 +30,28 @@ jobs:
         run: bun run build
 
       - name: Configure npm auth
-        run: echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::NPM_TOKEN secret is not set. Add it with: gh secret set NPM_TOKEN --repo ${{ github.repository }}"
+            exit 1
+          fi
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+
+      - name: Verify npm authentication
+        run: |
+          # Fail loudly here rather than letting each publish fail silently.
+          if ! npm whoami >/dev/null 2>&1; then
+            echo "::error::npm authentication failed. The NPM_TOKEN secret is missing, expired, or lacks publish rights to the @anyq scope."
+            exit 1
+          fi
+          echo "Authenticated to npm as: $(npm whoami)"
 
       - name: Publish all packages
         run: |
+          set -uo pipefail
+
           PACKAGES=(
             core
             memory
@@ -47,17 +65,46 @@ jobs:
             azure-servicebus
           )
 
+          published=()
+          skipped=()
+          failed=()
+
           for pkg in "${PACKAGES[@]}"; do
-            echo "Publishing @anyq/$pkg..."
-            cd packages/$pkg
-            bun publish --access public --no-git-checks || echo "Failed or already published: @anyq/$pkg"
-            cd ../..
+            name="@anyq/$pkg"
+            version="$(node -p "require('./packages/$pkg/package.json').version")"
+
+            # Idempotent: skip versions already on the registry so re-running a
+            # tag does not hard-fail on packages that already published.
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "Skipping ${name}@${version} (already on npm)"
+              skipped+=("${name}@${version}")
+              continue
+            fi
+
+            echo "Publishing ${name}@${version}..."
+            if ( cd "packages/$pkg" && bun publish --access public --no-git-checks ); then
+              published+=("${name}@${version}")
+            else
+              echo "::error::Failed to publish ${name}@${version}"
+              failed+=("${name}@${version}")
+            fi
           done
 
-      - name: Publish Summary
-        run: |
-          echo "## Published Packages" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          for pkg in core memory redis-streams rabbitmq sqs sns google-pubsub kafka nats azure-servicebus; do
-            echo "- \`@anyq/$pkg\`" >> $GITHUB_STEP_SUMMARY
-          done
+          {
+            echo "## Publish results"
+            echo ""
+            echo "### Published (${#published[@]})"
+            for p in "${published[@]:-}"; do [ -n "$p" ] && echo "- \`$p\`"; done
+            echo ""
+            echo "### Skipped, already on npm (${#skipped[@]})"
+            for p in "${skipped[@]:-}"; do [ -n "$p" ] && echo "- \`$p\`"; done
+            echo ""
+            echo "### Failed (${#failed[@]})"
+            for p in "${failed[@]:-}"; do [ -n "$p" ] && echo "- \`$p\`"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Any real failure fails the job so a green check means a real release.
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::${#failed[@]} package(s) failed to publish: ${failed[*]}"
+            exit 1
+          fi
