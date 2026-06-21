@@ -1,0 +1,59 @@
+name: Go CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "go/**"
+      - ".github/workflows/go-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "go/**"
+      - ".github/workflows/go-ci.yml"
+  # Reusable: the Go publish workflow calls this to gate a release on a green build.
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  go-ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Verify gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::The following files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Compile integration tests
+        # Broker-backed E2E tests live behind the `integration` build tag and
+        # self-skip without their broker env vars; here we only ensure they
+        # compile (no Docker in CI).
+        run: go vet -tags integration ./...
+
+      - name: Test
+        run: go test -race ./...

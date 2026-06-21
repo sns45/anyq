@@ -1,0 +1,98 @@
+name: Go Publish
+
+# Go modules are not pushed to a registry: a version is "published" by tagging a
+# commit and letting the module proxy ingest it. Because this module lives in the
+# repo's `go/` subdirectory, its semver tags are subdirectory-prefixed:
+#
+#     go/vX.Y.Z   ->   github.com/sns45/anyq/go @ vX.Y.Z
+#
+# (The TS packages publish on `v*` tags via npm; `go/v*` never collides with that.)
+on:
+  push:
+    tags:
+      - "go/v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # Re-run the full Go build/test on the tagged commit; a release must be green.
+  verify:
+    uses: ./.github/workflows/go-ci.yml
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+
+      - name: Resolve module version from tag
+        id: ver
+        run: |
+          # Tag form: go/vX.Y.Z  ->  module version vX.Y.Z
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#go/}"
+          if ! printf '%s' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Tag '$tag' does not yield a valid semver (got '$version'). Use go/vX.Y.Z."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Module version: $version"
+
+      - name: Check tag matches core.Version
+        working-directory: go
+        run: |
+          want="${{ steps.ver.outputs.version }}"
+          want="${want#v}"
+          got="$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' core/version.go | head -1)"
+          if [ "$want" != "$got" ]; then
+            echo "::error::Tag version v$want does not match core.Version ($got in go/core/version.go). Bump the constant or fix the tag."
+            exit 1
+          fi
+          echo "core.Version=$got matches the tag."
+
+      - name: Publish to the Go module proxy
+        env:
+          MODULE: github.com/sns45/anyq/go
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          # Requesting the version from proxy.golang.org triggers ingestion, after
+          # which `go get $MODULE@$VERSION` resolves for everyone.
+          url="https://proxy.golang.org/${MODULE}/@v/${VERSION}.info"
+          echo "Warming proxy: $url"
+          for i in 1 2 3 4 5 6; do
+            if curl -fsSL "$url"; then
+              echo ""
+              echo "Module ${MODULE}@${VERSION} is live on the Go proxy."
+              exit 0
+            fi
+            echo "Proxy not ready yet (attempt $i/6); retrying in 15s..."
+            sleep 15
+          done
+          echo "::error::Proxy did not serve ${MODULE}@${VERSION} after retries."
+          exit 1
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${{ github.repository }}" \
+            --title "Go ${VERSION}" \
+            --verify-tag \
+            --notes "Go module \`github.com/sns45/anyq/go\` ${VERSION}.
+
+          Install:
+          \`\`\`
+          go get github.com/sns45/anyq/go@${VERSION}
+          \`\`\`
+
+          Import an adapter, e.g.:
+          \`\`\`go
+          import \"github.com/sns45/anyq/go/kafka\"
+          \`\`\`"
