@@ -133,12 +133,19 @@ export class RedisStreamsConsumer<T = unknown> extends BaseConsumer<T> {
         error instanceof Error ? error : undefined
       );
     }
+
+    // Redis Streams has no native delayed redelivery in this release; enforce
+    // the park-downgrade policy after a successful connect (warn, or throw when
+    // allowParkDowngrade === false). Kept outside the try so a thrown
+    // ConfigurationError is not masked as a ConnectionError.
+    this.verifyParkPolicy();
   }
 
   /**
    * Disconnect from Redis
    */
   async disconnect(): Promise<void> {
+    this.beginShutdown();
     if (!this._connected || !this.client) {
       return;
     }

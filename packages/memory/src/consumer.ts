@@ -109,12 +109,16 @@ export class MemoryConsumer<T = unknown> extends BaseConsumer<T> {
         error instanceof Error ? error : undefined
       );
     }
+
+    // No-op for memory (native delay), but kept uniform across adapters.
+    this.verifyParkPolicy();
   }
 
   /**
    * Disconnect from the queue
    */
   async disconnect(): Promise<void> {
+    this.beginShutdown();
     if (!this._connected) {
       return;
     }

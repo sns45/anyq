@@ -161,6 +161,26 @@ export interface BaseQueueConfig {
    * `backpressurePause`, `logAndFail`, `custom`).
    */
   strategy?: BaseRetryStrategy;
+
+  /**
+   * Controls what happens when the configured `strategy` might emit a `park`
+   * decision but the adapter has no native delayed-redelivery support. On such
+   * adapters a `park` downgrades to a blocking in-process retry (capped by
+   * maxAttempts), which can stall the consumer and, on lease-based brokers,
+   * duplicate the message when the lock/visibility window expires mid-sleep.
+   *
+   * When explicitly `false`, the consumer's park-policy check throws a
+   * `ConfigurationError` at startup so the caller must opt into the downgrade.
+   * When `true` (or unset), the downgrade is allowed and a single warning is
+   * logged at startup.
+   *
+   * Default (unset): downgrade allowed (warn only, never throw). This
+   * INTENTIONALLY DIFFERS from the Go port, which defaults to fail-loud: the Go
+   * module has no tagged release yet, whereas the TypeScript packages are
+   * already published (0.2.x/0.3.0) with real users, so a fail-loud default
+   * would be a breaking change.
+   */
+  allowParkDowngrade?: boolean;
 }
 
 /**

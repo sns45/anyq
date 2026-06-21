@@ -146,12 +146,16 @@ export class SQSConsumer<T = unknown> extends BaseConsumer<T> {
         error instanceof Error ? error : undefined
       );
     }
+
+    // No-op for SQS (native delay), but kept uniform across adapters.
+    this.verifyParkPolicy();
   }
 
   /**
    * Disconnect from SQS
    */
   async disconnect(): Promise<void> {
+    this.beginShutdown();
     if (!this._connected || !this.client) {
       return;
     }

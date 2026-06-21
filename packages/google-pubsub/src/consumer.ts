@@ -99,6 +99,13 @@ export class PubSubConsumer<T = unknown> extends BaseConsumer<T> {
         error instanceof Error ? error : undefined
       );
     }
+
+    // Pub/Sub has no per-message delayed-redelivery primitive, so park is a
+    // documented downgrade (native park needs external infra such as Cloud
+    // Tasks or a delay-topic + mover). Enforce the park-downgrade policy after
+    // a successful connect (warn, or throw when allowParkDowngrade === false).
+    // Kept outside the try so a thrown ConfigurationError is not masked.
+    this.verifyParkPolicy();
   }
 
   /**
@@ -155,6 +162,7 @@ export class PubSubConsumer<T = unknown> extends BaseConsumer<T> {
    * Disconnect from Pub/Sub
    */
   async disconnect(): Promise<void> {
+    this.beginShutdown();
     if (this.subscription) {
       await this.subscription.close();
       this.subscription = null;

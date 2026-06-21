@@ -149,6 +149,9 @@ export class NATSConsumer<T = unknown> extends BaseConsumer<T> {
         error instanceof Error ? error : undefined
       );
     }
+
+    // No-op for NATS (native delay), but kept uniform across adapters.
+    this.verifyParkPolicy();
   }
 
   /**
@@ -199,6 +202,7 @@ export class NATSConsumer<T = unknown> extends BaseConsumer<T> {
    * Disconnect from NATS server
    */
   async disconnect(): Promise<void> {
+    this.beginShutdown();
     this.shouldStop = true;
 
     if (this.consumerMessages) {
