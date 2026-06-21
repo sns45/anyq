@@ -309,6 +309,12 @@ export abstract class BaseConsumer<T = unknown>
     for (const abort of [...this._pendingSleepAborts]) {
       abort();
     }
+    // Cancel any pending backpressure resume so it doesn't fire (and resume a
+    // disconnected consumer) after shutdown.
+    if (this._backpressureResumeTimer) {
+      clearTimeout(this._backpressureResumeTimer);
+      this._backpressureResumeTimer = null;
+    }
   }
 
   /**

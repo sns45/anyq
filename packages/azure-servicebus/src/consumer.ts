@@ -137,6 +137,10 @@ export class ServiceBusConsumer<T = unknown> extends BaseConsumer<T> {
     if (this._connected) {
       return;
     }
+    // Park-downgrade policy check before opening the connection, consistent with
+    // the other adapters. Azure supports native delay, so this never throws here,
+    // but keeping it outside the try means a ConfigurationError is never masked.
+    this.verifyParkPolicy();
 
     try {
       const { connection, queue, subscription, receiver } = this.serviceBusConfig;
@@ -174,13 +178,8 @@ export class ServiceBusConsumer<T = unknown> extends BaseConsumer<T> {
       }
 
       this._connected = true;
-      this.verifyParkPolicy();
     } catch (error) {
       if (error instanceof ConnectionError) {
-        throw error;
-      }
-      // Re-throw ConfigurationError from verifyParkPolicy untouched.
-      if (error instanceof Error && error.name === 'ConfigurationError') {
         throw error;
       }
       throw new ConnectionError(
