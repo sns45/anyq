@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: anyq-go-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: anyq-go-redis-commander
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  tester:
+    image: golang:1.25
+    container_name: anyq-go-redis-streams-tester
+    working_dir: /app/go
+    command: ["go", "run", "./apps/testers/redis-streams"]
+    volumes:
+      - ../../../..:/app
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - REDIS_ADDR=redis:6379
+      - STREAM_NAME=orders
+      - CONSUMER_GROUP=order-processors
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis-data:
