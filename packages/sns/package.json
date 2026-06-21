@@ -1,6 +1,6 @@
 {
   "name": "@anyq/sns",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "AWS SNS adapter for anyq",
   "type": "module",
   "main": "./dist/index.js",
@@ -12,7 +12,9 @@
       "types": "./dist/index.d.ts"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "bun build ./src/index.ts --outdir ./dist --target bun && bun run build:types",
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
@@ -30,7 +32,14 @@
   "peerDependencies": {
     "@anyq/core": "workspace:*"
   },
-  "keywords": ["anyq", "queue", "sns", "aws", "pub-sub", "fan-out"],
+  "keywords": [
+    "anyq",
+    "queue",
+    "sns",
+    "aws",
+    "pub-sub",
+    "fan-out"
+  ],
   "license": "MIT",
   "author": "Shantanu Sharma",
   "repository": {

@@ -6,6 +6,8 @@ import {
   ServiceBusClient,
   type ServiceBusReceiver,
   type ServiceBusReceivedMessage,
+  type ServiceBusSender,
+  type ServiceBusMessage,
   type ProcessErrorArgs,
 } from '@azure/service-bus';
 import {
@@ -15,6 +17,7 @@ import {
   type BatchMessageHandler,
   type SubscribeOptions,
   type HealthStatus,
+  type IMessage,
   ConnectionError,
 } from '@anyq/core';
 import type { ServiceBusConsumerConfig } from './config.js';
@@ -30,6 +33,21 @@ export class ServiceBusConsumer<T = unknown> extends BaseConsumer<T> {
   private receiver: ServiceBusReceiver | null = null;
   private readonly serviceBusConfig: ServiceBusConsumerConfig;
   private subscription: { close: () => Promise<void> } | null = null;
+  /** Lazily-created sender used by native park (scheduled enqueue). */
+  private parkSender: ServiceBusSender | null = null;
+
+  /**
+   * Azure Service Bus supports scheduled delivery natively via
+   * `scheduledEnqueueTimeUtc`, so `park` re-sends the message with a future
+   * enqueue time rather than downgrading to a blocking in-process sleep.
+   *
+   * This matters because the SB lock duration defaults to 1 minute (max 5): a
+   * multi-minute downgraded park would block the consumer AND duplicate the
+   * message once the lock expires mid-sleep. See {@link parkMessage}.
+   */
+  protected override get supportsNativeDelay(): boolean {
+    return true;
+  }
 
   constructor(config: ServiceBusConsumerConfig) {
     super(config);
@@ -49,12 +67,80 @@ export class ServiceBusConsumer<T = unknown> extends BaseConsumer<T> {
   }
 
   /**
+   * Resolve the entity (queue or topic) that park re-sends should target.
+   * For a subscription consumer the message originated on a topic, so the
+   * re-send goes back to that topic (and fans out to the subscription again);
+   * for a queue consumer it goes back to the same queue.
+   */
+  private parkEntity(): string | undefined {
+    return (
+      this.serviceBusConfig.subscription?.topicName ??
+      this.serviceBusConfig.queue?.name
+    );
+  }
+
+  /**
+   * Native park: re-send the message body to the same queue/topic with a
+   * future `scheduledEnqueueTimeUtc`, then complete (settle) the ORIGINAL
+   * received message so the broker does not redeliver it after the lock.
+   *
+   * On send failure we fall back to abandon (`nack(true)`) so the broker can
+   * redeliver under its own policy rather than dropping the message.
+   */
+  protected override async parkMessage(
+    message: IMessage<T>,
+    delayMs: number,
+  ): Promise<void> {
+    const entity = this.parkEntity();
+    if (!this.client || !entity) {
+      this.logger.warn('parkMessage called without a connected Service Bus client', {
+        messageId: message.id,
+      });
+      await message.nack(true);
+      return;
+    }
+
+    try {
+      if (!this.parkSender) {
+        this.parkSender = this.client.createSender(entity);
+      }
+
+      const serializedBody = this.serializer.serialize(message.body);
+      const sbMessage: ServiceBusMessage = {
+        messageId: message.id,
+        body: serializedBody,
+        contentType: 'application/json',
+        partitionKey: message.key,
+        scheduledEnqueueTimeUtc: new Date(Date.now() + Math.max(0, delayMs)),
+      };
+
+      await this.parkSender.sendMessages(sbMessage);
+      // Settle the original copy so the lock isn't lost to redelivery.
+      await message.ack();
+      this.logger.debug('Message parked (scheduled re-enqueue)', {
+        messageId: message.id,
+        delayMs,
+      });
+    } catch (err) {
+      this.logger.error('Failed to park Service Bus message; abandoning', {
+        messageId: message.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      await message.nack(true);
+    }
+  }
+
+  /**
    * Connect to Azure Service Bus
    */
   async connect(): Promise<void> {
     if (this._connected) {
       return;
     }
+    // Park-downgrade policy check before opening the connection, consistent with
+    // the other adapters. Azure supports native delay, so this never throws here,
+    // but keeping it outside the try means a ConfigurationError is never masked.
+    this.verifyParkPolicy();
 
     try {
       const { connection, queue, subscription, receiver } = this.serviceBusConfig;
@@ -93,6 +179,9 @@ export class ServiceBusConsumer<T = unknown> extends BaseConsumer<T> {
 
       this._connected = true;
     } catch (error) {
+      if (error instanceof ConnectionError) {
+        throw error;
+      }
       throw new ConnectionError(
         'Failed to connect to Azure Service Bus',
         error instanceof Error ? error : undefined
@@ -104,7 +193,13 @@ export class ServiceBusConsumer<T = unknown> extends BaseConsumer<T> {
    * Disconnect from Azure Service Bus
    */
   async disconnect(): Promise<void> {
+    this.beginShutdown();
     try {
+      if (this.parkSender) {
+        await this.parkSender.close();
+        this.parkSender = null;
+      }
+
       if (this.subscription) {
         await this.subscription.close();
         this.subscription = null;

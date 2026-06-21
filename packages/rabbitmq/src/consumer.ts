@@ -140,12 +140,20 @@ export class RabbitMQConsumer<T = unknown> extends BaseConsumer<T> {
         error instanceof Error ? error : undefined
       );
     }
+
+    // After a successful connect, enforce the park-downgrade policy. RabbitMQ
+    // has no native delayed redelivery in this release, so a park-capable
+    // strategy downgrades to a blocking in-process retry (warn, or throw when
+    // allowParkDowngrade === false). Kept outside the try so a thrown
+    // ConfigurationError is not masked as a ConnectionError.
+    this.verifyParkPolicy();
   }
 
   /**
    * Disconnect from RabbitMQ
    */
   async disconnect(): Promise<void> {
+    this.beginShutdown();
     try {
       if (this.channel && this.consumerTag) {
         await this.channel.cancel(this.consumerTag);

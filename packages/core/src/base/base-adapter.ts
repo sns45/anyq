@@ -37,12 +37,36 @@ import type {
   RetryStrategyContext,
 } from '../strategies/types.js';
 import { BACKPRESSURE_PAUSE_STRATEGY_NAME } from '../strategies/types.js';
+import { ConfigurationError } from '../types/errors.js';
 
 /**
- * Sleep for the given milliseconds.
+ * Built-in strategy names that provably never emit a `park` decision (their
+ * `decide` only returns `ack` / `fail` / `retry` / `deadLetter`). Any other
+ * strategy — including `backpressure-pause` and any `custom` strategy — is
+ * treated as potentially park-capable, since a custom `decide` cannot be
+ * introspected.
+ *
+ * `retry-then-dead-letter` is included deliberately: it only ever returns
+ * `retry` or `deadLetter`, so excluding it would spuriously warn (or, on the
+ * fail-loud path, throw) for the reference strategy used widely by callers.
  */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+const NEVER_PARK_STRATEGY_NAMES: ReadonlySet<string> = new Set([
+  'log-and-skip',
+  'log-and-fail',
+  'dead-letter-immediate',
+  'retry-then-dead-letter',
+]);
+
+/**
+ * Whether a configured strategy could emit a `park` decision. Classifies by
+ * strategy `name` only (no static analysis of `decide`): conservative —
+ * anything not provably park-free is assumed park-capable.
+ */
+function strategyMightPark(strategy?: { name: string }): boolean {
+  if (!strategy) {
+    return false;
+  }
+  return !NEVER_PARK_STRATEGY_NAMES.has(strategy.name);
 }
 
 /**
@@ -233,10 +257,125 @@ export abstract class BaseConsumer<T = unknown>
   protected _paused = false;
   protected eventEmitter = new EventEmitter<T>();
   private _backpressureResumeTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Set true when the consumer is shutting down (`disconnect()`), so an
+   * in-flight downgraded-park / retry `sleep` can abort promptly instead of
+   * blocking the full delay. Go threads a `context`; TypeScript has no ambient
+   * cancellation, so this flag (plus the abort callbacks) is the equivalent.
+   */
+  protected _shuttingDown = false;
+  /** Pending abort callbacks for in-flight downgrade sleeps. */
+  private _pendingSleepAborts: Set<() => void> = new Set();
+  /** Ensures the startup downgrade warning fires at most once. */
+  private _parkPolicyChecked = false;
 
   constructor(config: BaseQueueConfig, serializer?: ISerializer<T>) {
     super(config);
     this.serializer = serializer ?? (new JsonSerializer() as ISerializer<T>);
+  }
+
+  /**
+   * Sleep for `ms`, resolving early if the consumer starts shutting down.
+   *
+   * Used by the in-process downgrade paths (`retry` / downgraded `park`) so a
+   * blocking delay aborts on `disconnect()`. The non-downgrade paths are
+   * unaffected. Returns `true` if the full delay elapsed, `false` if aborted.
+   */
+  private cancellableSleep(ms: number): Promise<boolean> {
+    if (this._shuttingDown) {
+      return Promise.resolve(false);
+    }
+    return new Promise<boolean>((resolve) => {
+      let abort: () => void;
+      const timer = setTimeout(() => {
+        this._pendingSleepAborts.delete(abort);
+        resolve(true);
+      }, ms);
+      abort = () => {
+        clearTimeout(timer);
+        this._pendingSleepAborts.delete(abort);
+        resolve(false);
+      };
+      this._pendingSleepAborts.add(abort);
+    });
+  }
+
+  /**
+   * Signal shutdown so any in-flight downgrade sleeps abort promptly. Adapters
+   * call this from `disconnect()` (or it is invoked by the base where wired).
+   */
+  protected beginShutdown(): void {
+    this._shuttingDown = true;
+    for (const abort of [...this._pendingSleepAborts]) {
+      abort();
+    }
+    // Cancel any pending backpressure resume so it doesn't fire (and resume a
+    // disconnected consumer) after shutdown.
+    if (this._backpressureResumeTimer) {
+      clearTimeout(this._backpressureResumeTimer);
+      this._backpressureResumeTimer = null;
+    }
+  }
+
+  /**
+   * Enforce the park-downgrade policy at consumer startup.
+   *
+   * When the configured `strategy` might emit `park` but this adapter has no
+   * native delayed redelivery ({@link supportsNativeDelay} is `false`), a `park`
+   * decision downgrades to a blocking in-process retry. If
+   * `config.allowParkDowngrade === false`, this throws a {@link ConfigurationError}
+   * so the caller fails loud; otherwise it logs a single startup warning.
+   *
+   * No-op when no strategy is set, the strategy can't park, or the adapter
+   * supports native delay. Safe to call more than once (warning fires once).
+   *
+   * Adapters SHOULD call this from `connect()` (after construction, so
+   * {@link supportsNativeDelay} resolves to the concrete adapter override).
+   *
+   * Default behaviour (when `allowParkDowngrade` is unset) is to ALLOW the
+   * downgrade and only warn — preserving current published behaviour. This
+   * INTENTIONALLY DIFFERS from the Go port, which defaults to fail-loud (no Go
+   * release has shipped yet); the TS packages are already published with real
+   * users, so a fail-loud default would be breaking.
+   */
+  protected verifyParkPolicy(): void {
+    // Called from every adapter's connect(), so re-arm the shutdown flag here:
+    // a consumer that reconnects after a prior disconnect must not have its
+    // downgrade sleeps abort immediately.
+    this._shuttingDown = false;
+
+    const strategy = this.config.strategy as { name: string } | undefined;
+    if (!strategyMightPark(strategy)) {
+      return;
+    }
+    if (this.supportsNativeDelay) {
+      return;
+    }
+
+    const driver = this.config.driver;
+    if (this.config.allowParkDowngrade === false) {
+      throw new ConfigurationError(
+        "strategy may emit 'park' but this adapter has no native delayed-redelivery support; " +
+          'park would downgrade to a blocking in-process retry capped by maxAttempts. ' +
+          'Set allowParkDowngrade=true to opt into the downgrade, or use an adapter with ' +
+          'native delay (memory, sqs, nats, azure-servicebus).',
+        { strategy: strategy?.name, driver },
+      );
+    }
+
+    if (this._parkPolicyChecked) {
+      return;
+    }
+    this._parkPolicyChecked = true;
+    this.logger.warn(
+      "strategy may emit 'park' but this adapter has no native delayed redelivery; " +
+        'park will downgrade to a blocking in-process retry capped by maxAttempts',
+      {
+        strategy: strategy?.name,
+        driver,
+        maxAttempts: this.resolveMaxAttempts(),
+      },
+    );
   }
 
   /**
@@ -441,7 +580,15 @@ export abstract class BaseConsumer<T = unknown>
             );
             return { handled: true };
           }
-          await sleep(decision.delayMs);
+          {
+            const completed = await this.cancellableSleep(decision.delayMs);
+            if (!completed) {
+              // Aborted by shutdown: nack to requeue so the broker can
+              // redeliver rather than dropping the in-flight message.
+              await message.nack(true);
+              return { handled: true };
+            }
+          }
           try {
             await reinvoke();
             await message.ack();
@@ -471,7 +618,15 @@ export abstract class BaseConsumer<T = unknown>
             await this.deadLetterMessage(message, 'max attempts exceeded');
             return { handled: true };
           }
-          await sleep(decision.delayMs);
+          {
+            const completed = await this.cancellableSleep(decision.delayMs);
+            if (!completed) {
+              // Aborted by shutdown: nack to requeue so the broker can
+              // redeliver rather than dropping the in-flight message.
+              await message.nack(true);
+              return { handled: true };
+            }
+          }
           try {
             await reinvoke();
             await message.ack();

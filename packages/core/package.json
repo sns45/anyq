@@ -1,6 +1,6 @@
 {
   "name": "@anyq/core",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Core interfaces and utilities for anyq - Universal Queue Library",
   "type": "module",
   "main": "./dist/index.js",
@@ -27,7 +27,9 @@
       "types": "./dist/utils/index.d.ts"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "bun build ./src/index.ts --outdir ./dist --target bun && bun run build:types",
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
