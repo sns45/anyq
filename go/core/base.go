@@ -436,6 +436,10 @@ func (c *BaseConsumer) scheduleBackpressureResume(ctx context.Context, delayMs i
 		c.bpTimer.Stop()
 	}
 	c.bpTimer = time.AfterFunc(time.Duration(delayMs)*time.Millisecond, func() {
+		// Skip the resume if the consumer was disconnected during the pause window.
+		if !c.IsConnected() {
+			return
+		}
 		if err := c.hooks().Resume(context.Background()); err != nil {
 			c.Logger.Error("failed to resume after backpressure pause", map[string]any{"error": err.Error()})
 		}

@@ -295,6 +295,7 @@ func TestVerifyParkPolicy(t *testing.T) {
 func TestApplyStrategyBackpressurePausesAndResumes(t *testing.T) {
 	strat := core.BackpressurePause(&core.BackpressurePauseOptions{PauseMs: 20})
 	tc := newTestConsumer(core.BaseQueueConfig{Strategy: strat}, true) // native delay so park hook is used
+	tc.SetConnected(true)                                              // a real consumer is connected while processing; resume is skipped when disconnected
 	msg := &fakeMessage{id: "1", attempt: 1}
 
 	handled, err := tc.ApplyStrategy(context.Background(), msg, errors.New("rate limit exceeded"), func() error { return nil })

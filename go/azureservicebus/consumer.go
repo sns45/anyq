@@ -2,6 +2,7 @@ package azureservicebus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -228,7 +229,7 @@ func ackFatal(err error) error {
 	if err == nil {
 		return nil
 	}
-	if err == context.Canceled || err == context.DeadlineExceeded {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 	return nil
@@ -283,8 +284,11 @@ func (c *Consumer) SubscribeBatch(ctx context.Context, handler core.BatchHandler
 
 		herr := handler(ctx, msgs)
 		if herr != nil {
-			anyUnhandled := false
-			for _, m := range msgs {
+			// Only abandon messages the strategy did not settle. ApplyStrategy may
+			// have already completed/parked/dead-lettered some (handled==true), so
+			// abandoning the whole batch would double-settle those.
+			var unhandled []*azservicebus.ReceivedMessage
+			for i, m := range msgs {
 				mm := m
 				reinvoke := func() error { return handler(ctx, []core.Message{mm}) }
 				handled, applyErr := c.ApplyStrategy(ctx, mm, herr, reinvoke)
@@ -292,15 +296,15 @@ func (c *Consumer) SubscribeBatch(ctx context.Context, handler core.BatchHandler
 					return applyErr
 				}
 				if !handled {
-					anyUnhandled = true
+					unhandled = append(unhandled, sbMessages[i])
 				}
 			}
-			if anyUnhandled {
-				c.Logger.Error("error processing batch", map[string]any{"count": len(msgs), "error": herr.Error()})
+			if len(unhandled) > 0 {
+				c.Logger.Error("error processing batch", map[string]any{"count": len(unhandled), "error": herr.Error()})
 				if c.Config.OnError != nil {
 					c.Config.OnError(herr)
 				}
-				for _, sb := range sbMessages {
+				for _, sb := range unhandled {
 					_ = c.receiver.AbandonMessage(ctx, sb, nil)
 				}
 			}
