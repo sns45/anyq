@@ -29,12 +29,16 @@ jobs:
       - name: Build
         run: bun run build
 
+      - name: Install Doppler CLI
+        uses: dopplerhq/cli-action@v3
+
       - name: Configure registry auth
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
         run: |
+          cat > /tmp/configure-registry-auth.sh <<'SCRIPT'
           if [ -z "$NPM_TOKEN" ]; then
-            echo "::error::NPM_TOKEN secret is not set. Add it with: gh secret set NPM_TOKEN --repo ${{ github.repository }}"
+            echo "::error::NPM_TOKEN could not be resolved from Doppler. Verify the DOPPLER_TOKEN secret is set and the release-tooling/prd config contains NPM_TOKEN."
             exit 1
           fi
 
@@ -52,24 +56,30 @@ jobs:
             echo 'url = "https://registry.npmjs.org"'
             echo 'token = "$NPM_TOKEN"'
           } >> bunfig.toml
+          SCRIPT
+          doppler run -- bash /tmp/configure-registry-auth.sh
 
       - name: Verify npm authentication
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
         run: |
+          cat > /tmp/verify-npm-auth.sh <<'SCRIPT'
           # Early structural check on the token. Note: this validates the npm
           # auth path; bun's path is validated by the publish step itself, which
           # now fails the job loudly on any error.
           if ! npm whoami >/dev/null 2>&1; then
-            echo "::error::npm authentication failed. The NPM_TOKEN secret is missing, expired, or lacks publish rights to the @anyq scope."
+            echo "::error::npm authentication failed. NPM_TOKEN (sourced from Doppler via DOPPLER_TOKEN, config release-tooling/prd) is missing, expired, or lacks publish rights to the @anyq scope."
             exit 1
           fi
           echo "Authenticated to npm as: $(npm whoami)"
+          SCRIPT
+          doppler run -- bash /tmp/verify-npm-auth.sh
 
       - name: Publish all packages
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
         run: |
+          cat > /tmp/publish-packages.sh <<'SCRIPT'
           set -uo pipefail
 
           PACKAGES=(
@@ -128,3 +138,5 @@ jobs:
             echo "::error::${#failed[@]} package(s) failed to publish: ${failed[*]}"
             exit 1
           fi
+          SCRIPT
+          doppler run -- bash /tmp/publish-packages.sh
