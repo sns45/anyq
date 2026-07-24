@@ -1,0 +1,61 @@
+{
+  "name": "@anyq/cloudflare-queues",
+  "version": "0.3.1",
+  "description": "Cloudflare Queues adapter for anyq",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun && bun run build:types",
+    "build:types": "tsc --emitDeclarationOnly --outDir dist",
+    "dev": "bun build ./src/index.ts --outdir ./dist --target bun --watch",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist coverage"
+  },
+  "dependencies": {
+    "@anyq/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "@types/bun": "latest",
+    "miniflare": "^3.20250718.3",
+    "typescript": "^5.4.5"
+  },
+  "peerDependencies": {
+    "@anyq/core": "workspace:*"
+  },
+  "keywords": [
+    "anyq",
+    "queue",
+    "cloudflare",
+    "cloudflare-queues",
+    "workers",
+    "message-queue"
+  ],
+  "license": "MIT",
+  "author": "Shantanu Sharma",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sns45/anyq",
+    "directory": "packages/cloudflare-queues"
+  },
+  "homepage": "https://github.com/sns45/anyq#readme",
+  "bugs": {
+    "url": "https://github.com/sns45/anyq/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
