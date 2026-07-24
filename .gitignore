@@ -39,3 +39,6 @@ pnpm-lock.yaml
 tmp/
 temp/
 .cache/
+
+# stray local db (not part of anyq)
+data/
