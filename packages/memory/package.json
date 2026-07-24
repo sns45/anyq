@@ -1,6 +1,6 @@
 {
   "name": "@anyq/memory",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "In-memory queue adapter for anyq - for testing and development",
   "type": "module",
   "main": "./dist/index.js",

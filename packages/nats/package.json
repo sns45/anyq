@@ -1,6 +1,6 @@
 {
   "name": "@anyq/nats",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "NATS JetStream adapter for anyq",
   "type": "module",
   "main": "./dist/index.js",
