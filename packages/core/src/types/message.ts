@@ -96,6 +96,16 @@ export interface MemoryMetadata {
 }
 
 /**
+ * Cloudflare Queues-specific metadata
+ */
+export interface CloudflareQueuesMetadata {
+  /** Queue name the batch was delivered for (`MessageBatch.queue`) */
+  queueName: string;
+  /** Delivery attempt count reported by the platform (`Message.attempts`) */
+  attempts: number;
+}
+
+/**
  * Provider-specific metadata
  */
 export interface ProviderMetadata {
@@ -125,6 +135,9 @@ export interface ProviderMetadata {
 
   /** In-memory adapter metadata */
   memory?: MemoryMetadata;
+
+  /** Cloudflare Queues-specific metadata */
+  cloudflareQueues?: CloudflareQueuesMetadata;
 }
 
 /**
