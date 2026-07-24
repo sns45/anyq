@@ -1,6 +1,6 @@
 {
   "name": "@anyq/cloudflare-queues",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Cloudflare Queues adapter for anyq",
   "type": "module",
   "main": "./dist/index.js",
