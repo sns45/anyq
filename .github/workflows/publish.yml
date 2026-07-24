@@ -93,6 +93,7 @@ jobs:
             kafka
             nats
             azure-servicebus
+            cloudflare-queues
           )
 
           published=()
