@@ -36,6 +36,7 @@ export type {
   RedisStreamsMetadata,
   NATSMetadata,
   MemoryMetadata,
+  CloudflareQueuesMetadata,
   ProviderMetadata,
   IMessage,
   MessageCreateParams,

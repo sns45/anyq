@@ -15,7 +15,8 @@ export type QueueDriver =
   | 'google-pubsub'
   | 'kafka'
   | 'nats'
-  | 'azure-servicebus';
+  | 'azure-servicebus'
+  | 'cloudflare-queues';
 
 /**
  * Retry configuration with exponential backoff
