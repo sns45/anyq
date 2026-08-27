@@ -118,4 +118,4 @@ Use @anyq/core with these adapters:
 
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](https://github.com/sns45/anyq/blob/main/LICENSE).

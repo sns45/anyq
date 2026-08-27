@@ -358,7 +358,7 @@ Common environment variables used by testers:
 
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](LICENSE).
 
 ## Links
 

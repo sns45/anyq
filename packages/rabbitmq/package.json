@@ -1,6 +1,6 @@
 {
   "name": "@anyq/rabbitmq",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "RabbitMQ adapter for anyq",
   "type": "module",
   "main": "./dist/index.js",
@@ -14,7 +14,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "NOTICE"
   ],
   "scripts": {
     "build": "bun build ./src/index.ts --outdir ./dist --target bun && bun run build:types",
@@ -41,7 +42,7 @@
     "amqp",
     "message-queue"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Shantanu Sharma",
   "repository": {
     "type": "git",

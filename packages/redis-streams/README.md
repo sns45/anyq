@@ -96,4 +96,4 @@ See `@anyq/core` for the full strategy catalogue.
 
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](https://github.com/sns45/anyq/blob/main/LICENSE).

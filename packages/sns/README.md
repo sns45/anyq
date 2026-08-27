@@ -81,4 +81,4 @@ Pluggable retry strategies from `@anyq/core` are a **consumer-side** feature. SN
 
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](https://github.com/sns45/anyq/blob/main/LICENSE).

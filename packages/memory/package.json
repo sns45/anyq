@@ -1,6 +1,6 @@
 {
   "name": "@anyq/memory",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "In-memory queue adapter for anyq - for testing and development",
   "type": "module",
   "main": "./dist/index.js",
@@ -12,7 +12,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "NOTICE"
   ],
   "scripts": {
     "build": "bun build ./src/index.ts --outdir ./dist --target bun && bun run build:types",
@@ -37,7 +38,7 @@
     "testing",
     "anyq"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Shantanu Sharma",
   "repository": {
     "type": "git",
