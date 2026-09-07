@@ -297,8 +297,8 @@ On the services that do not list it, pgmq documents a SQL only install for exact
 The tester exposes the same HTTP endpoints as the other Go testers:
 
 ```bash
-PGMQ_URL=postgres://postgres:postgres@localhost:5433/postgres go run ./apps/testers/pgmq
-PGMQ_URL=postgres://postgres:postgres@localhost:5433/postgres go test -race -tags integration ./pgmq -count=1 -v
+PGMQ_URL=postgres://postgres:postgres@localhost:5432/postgres go run ./apps/testers/pgmq
+PGMQ_URL=postgres://postgres:postgres@localhost:5432/postgres go test -race -tags integration ./pgmq -count=1 -v
 ```
 
 Run those commands from `go/`. The supplied `apps/testers/pgmq/docker-compose.yml` binds port 5432 for a standalone local database. Integration tests use unique `go_` queue names and skip unless `PGMQ_URL` is set.
