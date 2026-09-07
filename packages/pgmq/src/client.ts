@@ -5,7 +5,12 @@
 
 import pg from 'pg';
 import type { Pool } from 'pg';
-import { ConfigurationError, ConnectionError, type MessageHeaders } from '@anyq/core';
+import {
+  ConfigurationError,
+  ConnectionError,
+  SerializationError,
+  type MessageHeaders,
+} from '@anyq/core';
 import type { PgmqConfig } from './config.js';
 
 /** pgmq caps queue names at 47 characters and only allows word characters. */
@@ -127,9 +132,30 @@ export function asConnectionError(message: string, error: unknown): ConnectionEr
   return new ConnectionError(message, error instanceof Error ? error : undefined);
 }
 
+/** Strict decoder: throws on any byte sequence that is not valid UTF-8. */
+const strictUtf8 = new TextDecoder('utf-8', { fatal: true });
+
+/**
+ * Decode a Buffer header value as text, refusing anything that is not valid
+ * UTF-8 so bytes are never silently replaced with U+FFFD. Matches the Go
+ * adapter, which rejects the same input with SERIALIZATION_ERROR.
+ */
+function headerText(name: string, value: Buffer): string {
+  try {
+    return strictUtf8.decode(value);
+  } catch (err) {
+    throw new SerializationError(
+      `header ${JSON.stringify(name)} is not valid UTF-8; pgmq headers are text, encode binary values (for example base64) before publishing`,
+      err instanceof Error ? err : undefined,
+    );
+  }
+}
+
 /**
  * Flatten anyq headers (string | Buffer | undefined) plus the optional key
  * into the JSON object stored in pgmq's `headers` column.
+ *
+ * @throws {SerializationError} when a Buffer value is not valid UTF-8
  */
 export function packHeaders(
   headers: MessageHeaders | undefined,
@@ -139,7 +165,7 @@ export function packHeaders(
   if (headers) {
     for (const [k, v] of Object.entries(headers)) {
       if (v === undefined) continue;
-      out[k] = Buffer.isBuffer(v) ? v.toString('utf8') : String(v);
+      out[k] = Buffer.isBuffer(v) ? headerText(k, v) : String(v);
     }
   }
   if (key !== undefined) {

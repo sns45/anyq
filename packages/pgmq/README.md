@@ -80,6 +80,8 @@ await producer.publish({ orderId: '124' }, { delaySeconds: 60 });
 
 Headers travel in pgmq's `headers` jsonb column; the routing `key` is stored there under the reserved header `x-anyq-key`. Dead lettered messages carry `x-original-queue`, `x-death-time`, `x-delivery-attempts` and, unless `includeError` is false, `x-death-reason`.
 
+**Headers are text.** String values are stored as they are. `Buffer` values must be valid UTF-8; they are stored as text and arrive on the consumer as strings. A `Buffer` that is not valid UTF-8 is rejected with a `SerializationError` at publish time rather than being altered (no U+FFFD replacement), which matches the Go adapter. Binary header values must be encoded by the caller, for example as base64.
+
 The visibility timeout is the processing lease. A message that is neither acked nor nacked becomes visible again when `vt` lapses, with `read_ct` incremented, so `deliveryAttempt` is always truthful.
 
 Three rules follow from that lease:

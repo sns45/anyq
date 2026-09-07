@@ -19,6 +19,7 @@ import {
   logAndSkip,
   logAndFail,
   ConfigurationError,
+  SerializationError,
   type IMessage,
   type Logger,
 } from '@anyq/core';
@@ -827,6 +828,51 @@ describeIf('@anyq/pgmq integration', () => {
       await consumer.disconnect();
       expect(Date.now() - started).toBeGreaterThanOrEqual(1200);
       expect(inFlight).toBe(0);
+    } finally {
+      await consumer.disconnect();
+      await producer.disconnect();
+    }
+  }, 20000);
+
+  test('Buffer headers must be valid UTF-8: valid ones round trip as strings, invalid ones are rejected', async () => {
+    const name = q('hdrutf8');
+    const producer = new PgmqProducer<{ n: number }>(base(name));
+    const consumer = new PgmqConsumer<{ n: number }>(base(name));
+    const received: IMessage<{ n: number }>[] = [];
+
+    try {
+      await producer.connect();
+      await consumer.connect();
+
+      // Invalid UTF-8 (0x80 0xff 0x41) is rejected, not replaced with U+FFFD.
+      let caught: unknown;
+      try {
+        await producer.publish({ n: 0 }, { headers: { 'x-bin': Buffer.from([0x80, 0xff, 0x41]) } });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(SerializationError);
+      expect(await queueLength(name)).toBe(0);
+
+      let batchCaught: unknown;
+      try {
+        await producer.publishBatch([
+          { body: { n: 1 }, options: { headers: { ok: 'yes' } } },
+          { body: { n: 2 }, options: { headers: { 'x-bin': Buffer.from([0xc3, 0x28]) } } },
+        ]);
+      } catch (err) {
+        batchCaught = err;
+      }
+      expect(batchCaught).toBeInstanceOf(SerializationError);
+      expect(await queueLength(name)).toBe(0);
+
+      // Valid UTF-8 bytes arrive as the equivalent string.
+      await producer.publish({ n: 3 }, { headers: { 'x-text': Buffer.from('héllo ✓', 'utf8') } });
+      await consumer.subscribe(async (m) => {
+        received.push(m);
+      });
+      expect(await waitFor(() => received.length === 1)).toBe(true);
+      expect(received[0].headers['x-text']).toBe('héllo ✓');
     } finally {
       await consumer.disconnect();
       await producer.disconnect();

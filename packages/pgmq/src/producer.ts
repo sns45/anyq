@@ -11,6 +11,7 @@ import {
   ConfigurationError,
   ConnectionError,
   PublishError,
+  SerializationError,
 } from '@anyq/core';
 import type { PgmqConfig, PgmqProducerOptions } from './config.js';
 import {
@@ -132,6 +133,9 @@ export class PgmqProducer<T = unknown> extends BaseProducer<T> {
       this.logger.debug('Message published', { messageId, queue: this.queueName, delay });
       return messageId;
     } catch (error) {
+      // Encoding problems are the caller's to fix; surface them unwrapped
+      // (code SERIALIZATION_ERROR, same as the Go adapter).
+      if (error instanceof SerializationError) throw error;
       throw new PublishError('Failed to publish message', {
         cause: error instanceof Error ? error : undefined,
       });
@@ -183,6 +187,7 @@ export class PgmqProducer<T = unknown> extends BaseProducer<T> {
       this.logger.debug('Batch published', { count: ids.length, queue: this.queueName });
       return ids;
     } catch (error) {
+      if (error instanceof SerializationError) throw error;
       throw new PublishError('Failed to publish batch', {
         cause: error instanceof Error ? error : undefined,
       });
