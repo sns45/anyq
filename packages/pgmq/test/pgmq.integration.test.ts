@@ -879,6 +879,80 @@ describeIf('@anyq/pgmq integration', () => {
     }
   }, 20000);
 
+  test('concurrent nack(true) then ack() on one delivery keeps the requeue (ack becomes a no op)', async () => {
+    const name = q('racenackack');
+    const config = base(name, { pg: { connectionString: PGMQ_URL, max: 1 } });
+    const producer = new PgmqProducer<{ n: number }>(config);
+    const consumer = new PgmqConsumer<{ n: number }>(config);
+    const attempts: number[] = [];
+
+    try {
+      await producer.connect();
+      await consumer.connect();
+      await producer.publish({ n: 1 });
+
+      await consumer.subscribe(
+        async (m) => {
+          attempts.push(m.deliveryAttempt);
+          if (m.deliveryAttempt === 1) {
+            // Both issued before either SQL statement completes.
+            const nacked = m.nack(true);
+            const acked = m.ack();
+            await Promise.all([nacked, acked]);
+            return;
+          }
+          await m.ack();
+        },
+        { autoAck: false },
+      );
+
+      expect(await waitFor(() => attempts.length === 2)).toBe(true);
+      expect(attempts).toEqual([1, 2]);
+      expect(await waitFor(async () => (await queueLength(name)) === 0)).toBe(true);
+    } finally {
+      await consumer.disconnect();
+      await producer.disconnect();
+    }
+  }, 20000);
+
+  test('concurrent nack(true) then extendDeadline() on one delivery does not hide the requeue', async () => {
+    const name = q('racenackext');
+    const config = base(name, { pg: { connectionString: PGMQ_URL, max: 1 } });
+    const producer = new PgmqProducer<{ n: number }>(config);
+    const consumer = new PgmqConsumer<{ n: number }>(config);
+    const attempts: Array<{ attempt: number; at: number }> = [];
+
+    try {
+      await producer.connect();
+      await consumer.connect();
+      await producer.publish({ n: 1 });
+
+      await consumer.subscribe(
+        async (m) => {
+          attempts.push({ attempt: m.deliveryAttempt, at: Date.now() });
+          if (m.deliveryAttempt === 1) {
+            const nacked = m.nack(true);
+            const extended = m.extendDeadline!(30);
+            await Promise.all([nacked, extended]);
+            return;
+          }
+          await m.ack();
+        },
+        { autoAck: false },
+      );
+
+      // With the race, extendDeadline(30) would land after the requeue and
+      // hide the message for 30s; serialised, it is a no op and the message
+      // comes straight back.
+      expect(await waitFor(() => attempts.length === 2, 6000)).toBe(true);
+      expect(attempts.map((a) => a.attempt)).toEqual([1, 2]);
+      expect(attempts[1].at - attempts[0].at).toBeLessThan(5000);
+    } finally {
+      await consumer.disconnect();
+      await producer.disconnect();
+    }
+  }, 20000);
+
   test('connecting to a database without pgmq (autoInstall off) names the SQL only install path', async () => {
     const dbName = `anyq_nopgmq_${suffix}`;
     await admin.query(`CREATE DATABASE ${dbName}`);

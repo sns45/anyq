@@ -30,6 +30,16 @@ import {
 } from './client.js';
 
 /**
+ * Settlement bookkeeping for one delivery (see PgmqConsumer.settle).
+ */
+interface SettleState {
+  /** True once a finalising operation (ack, nack, park, dead letter) succeeded. */
+  settled: boolean;
+  /** Tail of the operation chain; every operation waits for the previous one. */
+  chain: Promise<void>;
+}
+
+/**
  * Default subscribe options
  */
 const DEFAULT_SUBSCRIBE_OPTIONS: Required<SubscribeOptions> = {
@@ -80,12 +90,15 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
   private pollingPromise: Promise<void> | null = null;
   private useLongPoll = false;
   /**
-   * Messages that have been settled (acked, nacked, parked or dead lettered).
-   * A settled message ignores further ack/nack/extend calls and is skipped by
-   * autoAck, so an explicit `nack(true)` inside a handler is never undone by
-   * the automatic ack that follows a normal return.
+   * Per delivery settlement state. Every ack, nack, park, dead letter and
+   * extendDeadline on one message runs through {@link settle}, which chains
+   * them one after another (the Go adapter uses a per delivery mutex for the
+   * same reason). `settled` flips to true only after a finalising operation's
+   * SQL has succeeded; once set, later operations are no ops, so an explicit
+   * `nack(true)` is never undone by autoAck, a concurrent `ack()`, or a
+   * concurrent `extendDeadline()`.
    */
-  private readonly settled = new WeakSet<IMessage<T>>();
+  private readonly states = new WeakMap<IMessage<T>, SettleState>();
 
   // pgmq schedules redelivery natively through the visibility timeout, so
   // `park` never downgrades to an in-process sleep.
@@ -237,8 +250,7 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
   ): Promise<void> {
     const seconds = Math.max(0, Math.ceil(delayMs / 1000));
     try {
-      await this.setVt(message.id, seconds);
-      this.settled.add(message);
+      await this.settle(message, () => this.setVt(message.id, seconds), true);
       this.logger.debug('Message parked for redelivery', {
         messageId: message.id,
         delaySeconds: seconds,
@@ -278,13 +290,7 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
       await message.nack(false);
       return;
     }
-    if (this.settled.has(message)) {
-      this.logger.debug('deadLetterMessage skipped; message already settled', {
-        messageId: message.id,
-      });
-      return;
-    }
-
+    const dlqName = this.dlqName;
     const dlqConfig = this.config.deadLetterQueue;
     const headers: Record<string, string | Buffer | undefined> = {
       ...message.headers,
@@ -296,49 +302,55 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
       headers['x-death-reason'] = reason;
     }
 
-    let client: PoolClient | undefined;
-    try {
-      client = await pool.connect();
-      await client.query('BEGIN');
-      await client.query('SELECT pgmq.send($1, $2::jsonb, $3::jsonb)', [
-        this.dlqName,
-        toJsonText(this.serializer.serialize(message.body)),
-        JSON.stringify(packHeaders(headers, message.key)),
-      ]);
-      const { rows } = await client.query<{ ok: boolean }>(
-        'SELECT pgmq.delete($1, $2::bigint) AS ok',
-        [this.queueName, message.id],
-      );
-      if (rows[0]?.ok !== true) {
-        await client.query('ROLLBACK');
-        this.settled.add(message);
-        this.logger.warn('Dead letter skipped; source message was already gone, no DLQ copy written', {
+    const transfer = async (): Promise<void> => {
+      let client: PoolClient | undefined;
+      try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+        await client.query('SELECT pgmq.send($1, $2::jsonb, $3::jsonb)', [
+          dlqName,
+          toJsonText(this.serializer.serialize(message.body)),
+          JSON.stringify(packHeaders(headers, message.key)),
+        ]);
+        const { rows } = await client.query<{ ok: boolean }>(
+          'SELECT pgmq.delete($1, $2::bigint) AS ok',
+          [this.queueName, message.id],
+        );
+        if (rows[0]?.ok !== true) {
+          await client.query('ROLLBACK');
+          this.logger.warn('Dead letter skipped; source message was already gone, no DLQ copy written', {
+            messageId: message.id,
+            dlq: dlqName,
+          });
+          return; // finalises: the source is gone either way
+        }
+        await client.query('COMMIT');
+        this.logger.warn('Message dead-lettered', {
           messageId: message.id,
-          dlq: this.dlqName,
+          reason,
+          dlq: dlqName,
         });
-        return;
+      } catch (err) {
+        if (client) {
+          await client.query('ROLLBACK').catch(() => undefined);
+        }
+        throw err;
+      } finally {
+        client?.release();
       }
-      await client.query('COMMIT');
-      this.settled.add(message);
-      this.logger.warn('Message dead-lettered', {
-        messageId: message.id,
-        reason,
-        dlq: this.dlqName,
-      });
+    };
+
+    try {
+      await this.settle(message, transfer, true);
     } catch (err) {
-      if (client) {
-        await client.query('ROLLBACK').catch(() => undefined);
-      }
       this.logger.error(
         'Dead letter transfer failed; leaving the lease to expire so the message is retried',
         {
           messageId: message.id,
-          dlq: this.dlqName,
+          dlq: dlqName,
           error: err instanceof Error ? err.message : String(err),
         },
       );
-    } finally {
-      client?.release();
     }
   }
 
@@ -480,9 +492,9 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
         try {
           await handler(messages);
           if (opts.autoAck) {
-            const pending = messages.filter((m) => !this.settled.has(m));
-            await this.deleteMany(pending.map((m) => m.id));
-            for (const m of pending) this.settled.add(m);
+            // Per message, through each settlement chain, so a concurrent
+            // explicit nack on one of them cannot be overtaken by the batch ack.
+            await Promise.all(messages.map((m) => m.ack()));
           }
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
@@ -518,8 +530,9 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
     try {
       this.emit('message', message);
       await handler(message);
-      // An explicit ack/nack inside the handler wins over autoAck.
-      if (opts.autoAck && !this.settled.has(message)) {
+      // ack() runs through the settlement chain and is a no op if the
+      // handler already settled the message, so an explicit ack/nack wins.
+      if (opts.autoAck) {
         await message.ack();
       }
     } catch (error) {
@@ -602,11 +615,6 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
     await this.pool?.query('SELECT pgmq.delete($1, $2::bigint)', [this.queueName, msgId]);
   }
 
-  private async deleteMany(msgIds: string[]): Promise<void> {
-    if (msgIds.length === 0) return;
-    await this.pool?.query('SELECT pgmq.delete($1, $2::bigint[])', [this.queueName, msgIds]);
-  }
-
   private async setVt(msgId: string, seconds: number): Promise<void> {
     await this.pool?.query('SELECT pgmq.set_vt($1, $2::bigint, $3::int)', [
       this.queueName,
@@ -650,32 +658,75 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
         },
       },
       raw: row,
-      // Settlement becomes final only once the SQL has succeeded, so a
-      // failed ack or nack can be retried instead of turning into a no op.
-      onAck: async () => {
-        if (this.settled.has(message)) return;
-        await this.deleteOne(msgId);
-        this.settled.add(message);
-        this.logger.debug('Message acknowledged', { messageId: msgId });
-      },
-      onNack: async (requeue = true) => {
-        if (this.settled.has(message)) return;
-        if (requeue) {
-          await this.setVt(msgId, 0);
-        } else {
-          await this.archiveOne(msgId);
-        }
-        this.settled.add(message);
-        this.logger.debug('Message nacked', { messageId: msgId, requeue });
-      },
-      onExtendDeadline: async (seconds: number) => {
-        if (this.settled.has(message)) return;
-        // pgmq sets an absolute deadline from now, like SQS ChangeMessageVisibility.
-        await this.setVt(msgId, seconds);
-        this.logger.debug('Deadline extended', { messageId: msgId, seconds });
-      },
+      // Every operation goes through the per delivery chain (see settle):
+      // serialised, no op once settled, and settled only after the SQL
+      // succeeded so a failed ack or nack can be retried.
+      onAck: () =>
+        this.settle(
+          message,
+          async () => {
+            await this.deleteOne(msgId);
+            this.logger.debug('Message acknowledged', { messageId: msgId });
+          },
+          true,
+        ),
+      onNack: (requeue = true) =>
+        this.settle(
+          message,
+          async () => {
+            if (requeue) {
+              await this.setVt(msgId, 0);
+            } else {
+              await this.archiveOne(msgId);
+            }
+            this.logger.debug('Message nacked', { messageId: msgId, requeue });
+          },
+          true,
+        ),
+      onExtendDeadline: (seconds: number) =>
+        this.settle(
+          message,
+          async () => {
+            // pgmq sets an absolute deadline from now, like SQS ChangeMessageVisibility.
+            await this.setVt(msgId, seconds);
+            this.logger.debug('Deadline extended', { messageId: msgId, seconds });
+          },
+          false,
+        ),
     });
     return message;
+  }
+
+  /**
+   * Run one settlement or deadline operation for a delivery.
+   *
+   * Operations on the same message are chained so they execute one at a
+   * time in call order. An operation is skipped when the message is already
+   * settled. `finalize` marks the message settled after the operation's SQL
+   * succeeded; a thrown operation leaves the state unchanged so the caller
+   * can retry. The chain survives failures.
+   */
+  private settle(
+    message: IMessage<T>,
+    op: () => Promise<void>,
+    finalize: boolean,
+  ): Promise<void> {
+    let state = this.states.get(message);
+    if (!state) {
+      state = { settled: false, chain: Promise.resolve() };
+      this.states.set(message, state);
+    }
+    const current = state;
+    const run = current.chain.then(async () => {
+      if (current.settled) return;
+      await op();
+      if (finalize) current.settled = true;
+    });
+    current.chain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   private sleep(ms: number): Promise<void> {
