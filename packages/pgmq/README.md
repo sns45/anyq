@@ -85,7 +85,8 @@ The visibility timeout is the processing lease. A message that is neither acked 
 Three rules follow from that lease:
 
 * **Rows read together are handled together.** Every row returned by one poll carries its own lease, so the consumer runs their handlers concurrently (up to `concurrency`); running them one after another would let the later leases expire while the earlier handlers run.
-* **An explicit settlement is final.** `ack()` or `nack()` called inside a handler wins over `autoAck`, and later `ack`, `nack` or `extendDeadline` calls on a settled message are no ops. A handler that nacks with requeue and then returns normally gets the redelivery it asked for.
+* **An explicit settlement is final, once it has succeeded.** `ack()` or `nack()` called inside a handler wins over `autoAck`, and later `ack`, `nack` or `extendDeadline` calls on a settled message are no ops. A handler that nacks with requeue and then returns normally gets the redelivery it asked for. The settled state is recorded only after the SQL succeeds, so an `ack` or `nack` that throws (connection blip, timeout) can simply be called again.
+* **A poll never overlaps itself.** The loop waits for every handler from one read to finish, including when one of them ends in a `fail` decision, before it reads again or lets `disconnect()` return. `concurrency` is therefore a hard ceiling, not a target.
 * **Dead lettering is one transaction.** The DLQ insert and the source delete commit together. If the source row is already gone (settled elsewhere, or the lease expired and another consumer finished it) the transaction rolls back, so no orphan DLQ copy is written. If the transfer fails for any other reason nothing is archived or deleted; the lease is left to expire and the message is retried after `visibilityTimeout`.
 
 ## Configuration

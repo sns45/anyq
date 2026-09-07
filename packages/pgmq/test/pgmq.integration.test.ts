@@ -17,6 +17,7 @@ import {
   deadLetterImmediate,
   backpressurePause,
   logAndSkip,
+  logAndFail,
   ConfigurationError,
   type IMessage,
   type Logger,
@@ -687,6 +688,145 @@ describeIf('@anyq/pgmq integration', () => {
       await sleep(500);
       expect(await queueLength(dlq)).toBe(0);
       expect(await queueLength(name)).toBe(0);
+    } finally {
+      await consumer.disconnect();
+      await producer.disconnect();
+    }
+  }, 20000);
+
+  test('a failed ack does not mark the message settled, so a retry still deletes it', async () => {
+    const name = q('ackretry');
+    const short = base(name, {
+      consumer: { visibilityTimeout: 2, longPollSeconds: 1, longPollIntervalMs: 50, pollingInterval: 50 },
+    });
+    const producer = new PgmqProducer<{ n: number }>(short);
+    const consumer = new PgmqConsumer<{ n: number }>(short);
+    const attempts: number[] = [];
+    let firstAckError: unknown;
+
+    try {
+      await producer.connect();
+      await consumer.connect();
+
+      // Make the first pgmq.delete fail, as a connection blip would.
+      const pool = consumer.getPool()!;
+      const patched = pool as unknown as { query: (...args: unknown[]) => Promise<unknown> };
+      const original = patched.query.bind(pool);
+      let injectOnce = true;
+      patched.query = (...args: unknown[]) => {
+        if (injectOnce && String(args[0]).includes('pgmq.delete')) {
+          injectOnce = false;
+          return Promise.reject(new Error('injected delete failure'));
+        }
+        return original(...args);
+      };
+
+      await producer.publish({ n: 1 });
+      await consumer.subscribe(
+        async (m) => {
+          attempts.push(m.deliveryAttempt);
+          try {
+            await m.ack();
+          } catch (err) {
+            firstAckError = err;
+          }
+          await m.ack(); // retry must really delete
+        },
+        { autoAck: false },
+      );
+
+      expect(await waitFor(() => attempts.length === 1)).toBe(true);
+      expect(firstAckError).toBeInstanceOf(Error);
+      await sleep(3500); // longer than the 2s lease
+      expect(attempts).toEqual([1]);
+      expect(await queueLength(name)).toBe(0);
+    } finally {
+      await consumer.disconnect();
+      await producer.disconnect();
+    }
+  }, 20000);
+
+  test('a fail decision does not let the next poll overlap sibling handlers', async () => {
+    const name = q('failoverlap');
+    const short = base(name, {
+      consumer: { visibilityTimeout: 2, longPollSeconds: 1, longPollIntervalMs: 50, pollingInterval: 50 },
+      strategy: logAndFail(),
+    });
+    const producer = new PgmqProducer<{ i: number }>(short);
+    const consumer = new PgmqConsumer<{ i: number }>(short);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const done: number[] = [];
+
+    try {
+      await producer.connect();
+      await consumer.connect();
+      await producer.publishBatch(Array.from({ length: 6 }, (_, i) => ({ body: { i } })));
+
+      await consumer.subscribe(
+        async (m) => {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          try {
+            if (m.body.i % 3 === 0 && m.deliveryAttempt === 1) {
+              throw new Error('poison'); // logAndFail turns this into a fail decision
+            }
+            await sleep(1500);
+            done.push(m.body.i);
+          } finally {
+            inFlight--;
+          }
+        },
+        { concurrency: 3 },
+      );
+
+      // Six messages, three per poll; the two poison ones come back after
+      // the 2s lease and succeed on attempt 2.
+      expect(await waitFor(() => done.length === 6, 15000)).toBe(true);
+      expect(maxInFlight).toBeLessThanOrEqual(3);
+      expect(await waitFor(async () => (await queueLength(name)) === 0, 5000)).toBe(true);
+    } finally {
+      await consumer.disconnect();
+      await producer.disconnect();
+    }
+  }, 30000);
+
+  test('disconnect waits for sibling handlers even after a fail decision', async () => {
+    const name = q('faildisc');
+    const short = base(name, {
+      consumer: { visibilityTimeout: 5, longPollSeconds: 1, longPollIntervalMs: 50, pollingInterval: 50 },
+      strategy: logAndFail(),
+    });
+    const producer = new PgmqProducer<{ i: number }>(short);
+    const consumer = new PgmqConsumer<{ i: number }>(short);
+    let inFlight = 0;
+
+    try {
+      await producer.connect();
+      await consumer.connect();
+      await producer.publishBatch([{ body: { i: 0 } }, { body: { i: 1 } }, { body: { i: 2 } }]);
+
+      await consumer.subscribe(
+        async (m) => {
+          if (m.body.i === 0) {
+            throw new Error('poison'); // fail decision, rejects at once
+          }
+          inFlight++;
+          try {
+            await sleep(1500);
+            await m.ack();
+          } finally {
+            inFlight--;
+          }
+        },
+        { concurrency: 3, autoAck: false },
+      );
+
+      await waitFor(() => inFlight === 2, 3000);
+      const started = Date.now();
+      await consumer.disconnect();
+      expect(Date.now() - started).toBeGreaterThanOrEqual(1200);
+      expect(inFlight).toBe(0);
     } finally {
       await consumer.disconnect();
       await producer.disconnect();

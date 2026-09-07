@@ -422,8 +422,19 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
 
         // Every row read is leased for `visibilityTimeout`, so all of them
         // must be handled at once; running them one after another would let
-        // the later leases expire while the earlier handlers run.
-        await Promise.all(rows.map((row) => this.handleOne(row, handler, opts)));
+        // the later leases expire while the earlier handlers run. Wait for
+        // every sibling before advancing (allSettled, not all): a `fail`
+        // decision must not let the next poll overlap handlers that are
+        // still running, nor let disconnect() return with work in flight.
+        const results = await Promise.allSettled(
+          rows.map((row) => this.handleOne(row, handler, opts)),
+        );
+        const rejected = results.find(
+          (r): r is PromiseRejectedResult => r.status === 'rejected',
+        );
+        if (rejected) {
+          throw rejected.reason;
+        }
       } catch (error) {
         if (this.running) {
           this.logger.error('Error polling messages', {
@@ -639,20 +650,22 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
         },
       },
       raw: row,
+      // Settlement becomes final only once the SQL has succeeded, so a
+      // failed ack or nack can be retried instead of turning into a no op.
       onAck: async () => {
         if (this.settled.has(message)) return;
-        this.settled.add(message);
         await this.deleteOne(msgId);
+        this.settled.add(message);
         this.logger.debug('Message acknowledged', { messageId: msgId });
       },
       onNack: async (requeue = true) => {
         if (this.settled.has(message)) return;
-        this.settled.add(message);
         if (requeue) {
           await this.setVt(msgId, 0);
         } else {
           await this.archiveOne(msgId);
         }
+        this.settled.add(message);
         this.logger.debug('Message nacked', { messageId: msgId, requeue });
       },
       onExtendDeadline: async (seconds: number) => {
