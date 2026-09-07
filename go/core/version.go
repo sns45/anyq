@@ -1,5 +1,5 @@
 package core
 
 // Version is the anyq Go module version. It matches the TypeScript package
-// numbering: 0.4.0 relicenses the project under Apache License 2.0.
-const Version = "0.4.0"
+// numbering: 0.5.0 adds the pgmq (Postgres) adapter.
+const Version = "0.5.0"

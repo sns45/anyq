@@ -10,7 +10,7 @@ This is a faithful behavioral port of the TypeScript implementation under
 
 - **Module path:** `github.com/sns45/anyq/go`
 - **Go:** 1.25+
-- **Version:** 0.4.0 (matches the TS numbering; retry strategies included from the first Go release)
+- **Version:** 0.5.0 (matches the TS numbering; retry strategies included from the first Go release)
 
 ## Install
 
@@ -315,11 +315,11 @@ This module lives in the `go/` subdirectory of a polyglot repo, so its semver
 tags are **prefixed with the subdirectory**:
 
 ```
-go/v0.4.0
+go/v0.5.0
 ```
 
-Consumers resolve it transparently: `go get github.com/sns45/anyq/go@v0.4.0`
-selects the `go/v0.4.0` tag because the module path ends in `/go`. Keep the Go
+Consumers resolve it transparently: `go get github.com/sns45/anyq/go@v0.5.0`
+selects the `go/v0.5.0` tag because the module path ends in `/go`. Keep the Go
 version number aligned with the TypeScript package version where practical.
 
 ## License

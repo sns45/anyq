@@ -1,6 +1,6 @@
 {
   "name": "@anyq/rabbitmq",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "RabbitMQ adapter for anyq",
   "type": "module",
   "main": "./dist/index.js",

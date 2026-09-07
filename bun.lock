@@ -157,7 +157,7 @@
     },
     "packages/azure-servicebus": {
       "name": "@anyq/azure-servicebus",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@anyq/core": "workspace:*",
         "@azure/service-bus": "^7.9.4",
@@ -172,7 +172,7 @@
     },
     "packages/cloudflare-queues": {
       "name": "@anyq/cloudflare-queues",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@anyq/core": "workspace:*",
       },
@@ -188,7 +188,7 @@
     },
     "packages/core": {
       "name": "@anyq/core",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "devDependencies": {
         "@types/bun": "^1.1.0",
         "typescript": "^5.3.0",
@@ -199,7 +199,7 @@
     },
     "packages/google-pubsub": {
       "name": "@anyq/google-pubsub",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@anyq/core": "workspace:*",
         "@google-cloud/pubsub": "^4.7.2",
@@ -213,7 +213,7 @@
     },
     "packages/kafka": {
       "name": "@anyq/kafka",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@anyq/core": "workspace:*",
         "kafkajs": "^2.2.4",
@@ -228,7 +228,7 @@
     },
     "packages/memory": {
       "name": "@anyq/memory",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@anyq/core": "workspace:*",
       },
@@ -239,7 +239,7 @@
     },
     "packages/nats": {
       "name": "@anyq/nats",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@anyq/core": "workspace:*",
         "nats": "^2.28.2",
@@ -253,7 +253,7 @@
     },
     "packages/pgmq": {
       "name": "@anyq/pgmq",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@anyq/core": "workspace:*",
         "pg": "^8.13.0",
@@ -269,7 +269,7 @@
     },
     "packages/rabbitmq": {
       "name": "@anyq/rabbitmq",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@anyq/core": "workspace:*",
         "amqplib": "^0.10.4",
@@ -284,7 +284,7 @@
     },
     "packages/redis-streams": {
       "name": "@anyq/redis-streams",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@anyq/core": "workspace:*",
         "ioredis": "^5.4.1",
@@ -299,7 +299,7 @@
     },
     "packages/sns": {
       "name": "@anyq/sns",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@anyq/core": "workspace:*",
         "@aws-sdk/client-sns": "^3.650.0",
@@ -314,7 +314,7 @@
     },
     "packages/sqs": {
       "name": "@anyq/sqs",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "dependencies": {
         "@anyq/core": "workspace:*",
         "@aws-sdk/client-sqs": "^3.650.0",
