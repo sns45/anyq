@@ -260,18 +260,18 @@ if err != nil { log.Fatal(err) }
 | `ConnectionString` | PG environment variables | Postgres connection string |
 | `Pool` | nil | Optional existing `*pgxpool.Pool`; the caller owns it |
 | `QueueName` | required | Must match `^[a-zA-Z0-9_]{1,47}$` |
-| `DeadLetterQueue` | `<queue>_dlq` | Explicitly choose a shorter name if the default exceeds 47 characters; `BaseQueueConfig.DeadLetterQueue.Destination` is also honored |
+| `DeadLetterQueue` | Disabled; `<queue>_dlq` when enabled | Active only when `BaseQueueConfig.DeadLetterQueue` is nonnil and `Enabled` is true. Name precedence: this field, then `BaseQueueConfig.DeadLetterQueue.Destination`, then `<queue>_dlq`. Only active DLQ names are validated; choose a shorter name if the default exceeds 47 characters |
 | `VisibilityTimeout` | `30 * time.Second` | Processing lease; fractional seconds round up |
 | `PollInterval` | `time.Second` | Sleep after an empty read or transport error |
 | `BatchSize` | `100` | Default `SubscribeBatch` size; subscription options may override it |
-| `AutoCreate` | nil (true) | Creates the queue and DLQ on connect; use a pointer to false to disable |
+| `AutoCreate` | nil (true) | Creates the main queue and any enabled DLQ on connect; use a pointer to false to disable |
 | `AutoInstall` | nil (true) | Attempts `CREATE EXTENSION IF NOT EXISTS pgmq` only when the schema is absent |
 
 `SubscribeOptions.Concurrency` controls workers; each worker reads one lease when ready for its next message. The consumer uses `pgmq.read`, followed by `PollInterval` when the queue is empty. Pausing, cancelling, or disconnecting releases unread handler deliveries with `set_vt 0`. An active database read can take up to `RequestTimeout` to finish and release its result. Disconnect stops new operations immediately and closes an owned pool after active operations finish. A supplied pool stays open.
 
 `Ack` deletes; `Nack(true)` makes the same message visible immediately; `Nack(false)` archives it. Explicit settlement wins over automatic acknowledgement. `ExtendDeadline` sets the lease relative to now and rounds up fractional seconds. `DeliveryAttempt` comes from `read_ct`; message IDs remain decimal strings with an internal `int64`. `Raw()` returns a `pgmq.Record` and `Metadata().Pgmq` carries the queue, ID, read count and timestamps. Health checks query `pgmq.metrics` and report `queueLength` and `totalMessages`.
 
-Native park uses `set_vt` and preserves the message ID. A dead letter decision sends to the configured DLQ and deletes the source in one transaction. If sending fails or the source is already gone, no new DLQ copy commits. The original headers remain, with `x-original-queue`, `x-death-time`, `x-delivery-attempts` and `x-death-reason` added. The attempts header records the native read count, including when a strategy retries the handler in process. Supplying a `BaseQueueConfig.DeadLetterQueue` with `IncludeError: false` omits the reason.
+Native park uses `set_vt` and preserves the message ID. A DLQ is created and used only when `BaseQueueConfig.DeadLetterQueue` is nonnil and `Enabled` is true. Otherwise, a dead letter decision logs a warning and archives the source, the same as `Nack(false)`. With an active DLQ, a dead letter decision sends to it and deletes the source in one transaction. If sending fails or the source is already gone, no new DLQ copy commits. The original headers remain, with `x-original-queue`, `x-death-time`, `x-delivery-attempts` and `x-death-reason` added. The attempts header records the native read count, including when a strategy retries the handler in process. Supplying a `BaseQueueConfig.DeadLetterQueue` with `IncludeError: false` omits the reason.
 
 pgmq settlement identifies a message by ID, without a receipt token for each lease. Keep handlers idempotent and extend the lease before it expires; a stale handler must not settle a message already claimed by another consumer. JSON storage does not support arbitrary binary bodies or binary header values.
 

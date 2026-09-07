@@ -379,7 +379,10 @@ func TestRetryStrategiesUseNativeDLQAndPark(t *testing.T) {
 	}
 	for name, strategy := range strategies {
 		t.Run(name, func(t *testing.T) {
-			f := setup(t, func(cfg *Config) { cfg.Strategy = strategy })
+			f := setup(t, func(cfg *Config) {
+				cfg.Strategy = strategy
+				cfg.BaseQueueConfig.DeadLetterQueue = &core.DeadLetterConfig{Enabled: true, IncludeError: true}
+			})
 			id := f.publish(t, &core.PublishOptions{Key: "route", Headers: core.MessageHeaders{"trace": []byte("keep")}})
 			ctx, cancel := context.WithCancel(f.ctx)
 			defer cancel()
@@ -441,8 +444,51 @@ func TestRetryStrategiesUseNativeDLQAndPark(t *testing.T) {
 	}
 }
 
+func TestDeadLetterImmediateWithoutActiveDLQArchives(t *testing.T) {
+	for _, name := range []string{"absent", "disabled"} {
+		t.Run(name, func(t *testing.T) {
+			f := setup(t, func(cfg *Config) {
+				cfg.Strategy = core.DeadLetterImmediate()
+				if name == "disabled" {
+					cfg.BaseQueueConfig.DeadLetterQueue = &core.DeadLetterConfig{Enabled: false}
+				}
+			})
+			f.publish(t, nil)
+			ctx, cancel := context.WithCancel(f.ctx)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				done <- f.c.Subscribe(ctx, func(context.Context, core.Message) error {
+					return errors.New("intentional failure")
+				}, nil)
+			}()
+			waitFor(t, func() bool { return f.depth(t, f.cfg.QueueName) == 0 })
+			cancel()
+			if err := <-done; !errors.Is(err, context.Canceled) {
+				t.Fatalf("subscription: %v", err)
+			}
+			var archived int
+			if err := f.pool.QueryRow(f.ctx, "SELECT count(*) FROM "+pgx.Identifier{"pgmq", "a_" + f.cfg.QueueName}.Sanitize()).Scan(&archived); err != nil {
+				t.Fatal(err)
+			}
+			if archived != 1 {
+				t.Errorf("archive count %d, want 1", archived)
+			}
+			var exists bool
+			if err := f.pool.QueryRow(f.ctx, "SELECT EXISTS(SELECT 1 FROM pgmq.list_queues() WHERE queue_name=$1)", f.cfg.QueueName+"_dlq").Scan(&exists); err != nil {
+				t.Fatal(err)
+			}
+			if exists {
+				t.Error("inactive default DLQ was created")
+			}
+		})
+	}
+}
+
 func TestDeadLetterFailureKeepsOriginal(t *testing.T) {
-	f := setup(t, nil)
+	f := setup(t, func(cfg *Config) {
+		cfg.BaseQueueConfig.DeadLetterQueue = &core.DeadLetterConfig{Enabled: true}
+	})
 	f.publish(t, nil)
 	m := f.one(t)
 	if _, err := f.pool.Exec(f.ctx, "SELECT pgmq.drop_queue($1)", f.cfg.QueueName+"_dlq"); err != nil {
@@ -596,7 +642,9 @@ func TestMissingInstallationAndAutomaticInstall(t *testing.T) {
 }
 
 func TestDeadLetterDoesNotCopyMissingSource(t *testing.T) {
-	f := setup(t, nil)
+	f := setup(t, func(cfg *Config) {
+		cfg.BaseQueueConfig.DeadLetterQueue = &core.DeadLetterConfig{Enabled: true}
+	})
 	f.publish(t, nil)
 	m := f.one(t)
 	if _, err := f.pool.Exec(f.ctx, "SELECT pgmq.delete($1,$2::bigint)", f.cfg.QueueName, m.ID()); err != nil {

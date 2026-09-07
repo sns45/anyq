@@ -125,7 +125,11 @@ func prepare(ctx context.Context, pool *pgxpool.Pool, cfg Config) error {
 		return installError(nil)
 	}
 	if enabled(cfg.AutoCreate) {
-		for _, name := range []string{cfg.QueueName, cfg.DeadLetterQueue} {
+		queues := []string{cfg.QueueName}
+		if dlq := cfg.BaseQueueConfig.DeadLetterQueue; dlq != nil && dlq.Enabled {
+			queues = append(queues, cfg.DeadLetterQueue)
+		}
+		for _, name := range queues {
 			if _, err := pool.Exec(ctx, "SELECT pgmq.create($1)", name); err != nil {
 				return core.NewConnectionError("failed to create pgmq queue", err)
 			}

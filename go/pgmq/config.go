@@ -27,10 +27,11 @@ type Config struct {
 	PollInterval time.Duration
 	// BatchSize is the default size for SubscribeBatch. Default: 100.
 	BatchSize int
-	// DeadLetterQueue defaults to QueueName followed by _dlq.
+	// DeadLetterQueue names the DLQ when BaseQueueConfig.DeadLetterQueue.Enabled.
+	// When empty, use Destination, then QueueName followed by _dlq.
 	// Set an explicit shorter name when the default would exceed 47 characters.
 	DeadLetterQueue string
-	// AutoCreate creates the queue and DLQ on connect. Nil means true.
+	// AutoCreate creates the main queue and any enabled DLQ on connect. Nil means true.
 	AutoCreate *bool
 	// AutoInstall installs pgmq when its schema is absent. Nil means true.
 	AutoInstall *bool
@@ -40,20 +41,23 @@ var queueNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{1,47}$`)
 
 func (cfg Config) resolve() (Config, error) {
 	cfg.Driver = core.DriverPgmq
-	if cfg.DeadLetterQueue == "" {
-		if dlq := cfg.BaseQueueConfig.DeadLetterQueue; dlq != nil && dlq.Destination != "" {
+	names := map[string]string{"QueueName": cfg.QueueName}
+	if dlq := cfg.BaseQueueConfig.DeadLetterQueue; dlq != nil && dlq.Enabled {
+		if cfg.DeadLetterQueue == "" {
 			cfg.DeadLetterQueue = dlq.Destination
-		} else {
-			cfg.DeadLetterQueue = cfg.QueueName + "_dlq"
+			if cfg.DeadLetterQueue == "" {
+				cfg.DeadLetterQueue = cfg.QueueName + "_dlq"
+			}
+		}
+		names["DeadLetterQueue"] = cfg.DeadLetterQueue
+		if strings.EqualFold(cfg.QueueName, cfg.DeadLetterQueue) {
+			return cfg, core.NewConfigurationError("DeadLetterQueue must differ from QueueName", nil)
 		}
 	}
-	for field, value := range map[string]string{"QueueName": cfg.QueueName, "DeadLetterQueue": cfg.DeadLetterQueue} {
+	for field, value := range names {
 		if !queueNamePattern.MatchString(value) {
 			return cfg, core.NewConfigurationError(field+" must match ^[a-zA-Z0-9_]{1,47}$", map[string]any{"field": field})
 		}
-	}
-	if strings.EqualFold(cfg.QueueName, cfg.DeadLetterQueue) {
-		return cfg, core.NewConfigurationError("DeadLetterQueue must differ from QueueName", nil)
 	}
 	if cfg.VisibilityTimeout < 0 || cfg.PollInterval < 0 || cfg.BatchSize < 0 || cfg.BatchSize > math.MaxInt32 || cfg.ConnectionTimeout < 0 || cfg.RequestTimeout < 0 {
 		return cfg, core.NewConfigurationError("timeouts and batch size must be nonnegative and batch size must fit a Postgres integer", nil)

@@ -177,12 +177,17 @@ func (c *Consumer) ParkMessage(ctx context.Context, msg core.Message, delayMs in
 	return d.dispose(ctx, "park", n)
 }
 
-// DeadLetterMessage atomically sends to the DLQ and removes the original.
+// DeadLetterMessage archives when no DLQ is enabled; otherwise it atomically
+// sends to the DLQ and removes the original.
 // Failed transfers leave the original available for redelivery after its lease.
 func (c *Consumer) DeadLetterMessage(ctx context.Context, msg core.Message, reason string) error {
 	d, err := c.ownDelivery(msg)
 	if err != nil {
 		return err
+	}
+	if dlq := c.cfg.BaseQueueConfig.DeadLetterQueue; dlq == nil || !dlq.Enabled {
+		c.Logger.Warn("no DLQ configured; archiving message", map[string]any{"messageId": msg.ID()})
+		return d.dispose(ctx, "archive", 0)
 	}
 	active := d.session.acquire()
 	if active {
