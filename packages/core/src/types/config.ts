@@ -16,7 +16,8 @@ export type QueueDriver =
   | 'kafka'
   | 'nats'
   | 'azure-servicebus'
-  | 'cloudflare-queues';
+  | 'cloudflare-queues'
+  | 'pgmq';
 
 /**
  * Retry configuration with exponential backoff

@@ -37,6 +37,7 @@ export type {
   NATSMetadata,
   MemoryMetadata,
   CloudflareQueuesMetadata,
+  PgmqMetadata,
   ProviderMetadata,
   IMessage,
   MessageCreateParams,

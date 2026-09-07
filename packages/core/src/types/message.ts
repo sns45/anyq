@@ -106,6 +106,22 @@ export interface CloudflareQueuesMetadata {
 }
 
 /**
+ * pgmq (Postgres) metadata
+ */
+export interface PgmqMetadata {
+  /** Queue name (the pgmq queue, i.e. table suffix) */
+  queueName: string;
+  /** pgmq message id (bigint, serialised as string) */
+  msgId: string;
+  /** Number of times the message has been read (pgmq `read_ct`) */
+  readCount: number;
+  /** When the message was enqueued (pgmq `enqueued_at`) */
+  enqueuedAt: Date;
+  /** When the current visibility timeout expires (pgmq `vt`) */
+  visibleAt: Date;
+}
+
+/**
  * Provider-specific metadata
  */
 export interface ProviderMetadata {
@@ -138,6 +154,9 @@ export interface ProviderMetadata {
 
   /** Cloudflare Queues-specific metadata */
   cloudflareQueues?: CloudflareQueuesMetadata;
+
+  /** pgmq (Postgres) metadata */
+  pgmq?: PgmqMetadata;
 }
 
 /**
