@@ -25,7 +25,7 @@ A universal message queue library providing a unified interface across multiple 
 | Apache Kafka | `@anyq/kafka` | High-throughput streaming |
 | NATS JetStream | `@anyq/nats` | Lightweight persistence |
 | Azure Service Bus | `@anyq/azure-servicebus` | Azure messaging |
-| `@anyq/pgmq` | `pg` | Postgres 13+ with pgmq 1.x (SQL only install supported) |
+| `@anyq/pgmq` | `pg` | Needs pgmq 1.x. Not on the RDS, Aurora, Azure, Cloud SQL, AlloyDB or Neon extension allowlists as of Sept 7, 2026; see the package README for the SQL only install |
 | Postgres (pgmq) | `@anyq/pgmq` | Queue on the Postgres you already run |
 
 ## Quick Start
