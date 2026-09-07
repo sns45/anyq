@@ -1,8 +1,8 @@
 # anyq (Go)
 
-A Go port of [anyq](../README.md), a universal message-queue abstraction. One
-small set of interfaces (`Producer`, `Consumer`, `Message`, `Strategy`) over nine
-brokers, with pluggable per-message retry strategies that behave consistently
+A Go port of [anyq](../README.md), a universal message queue abstraction. One
+small set of interfaces (`Producer`, `Consumer`, `Message`, `Strategy`) over ten
+brokers, with pluggable message retry strategies that behave consistently
 across every adapter.
 
 This is a faithful behavioral port of the TypeScript implementation under
@@ -27,7 +27,7 @@ Kafka client, and vice versa.
 ```
 go/
   core/             interfaces, errors, retry strategies, backoff, serialization (no broker SDKs)
-  memory/  redis/  rabbitmq/  sqs/  sns/  pubsub/  kafka/  nats/  azureservicebus/
+  memory/  redis/  rabbitmq/  sqs/  sns/  pubsub/  kafka/  nats/  azureservicebus/  pgmq/
   apps/testers/     one runnable integration-test server per adapter (net/http stdlib)
 ```
 
@@ -152,7 +152,7 @@ allowed, logged once at startup.
 
 **`deadLetter`** guarantees **"stop redelivering" universally**, but **"lands in a
 DLQ" only where marked**. It actively routes to a DLQ via the adapter hook only in
-`memory`; elsewhere a `deadLetter` decision settles the message (so it stops being
+`memory` and `pgmq`; elsewhere a `deadLetter` decision settles the message (so it stops being
 redelivered) and relies on **broker-native policy you configure out-of-band**
 (SQS redrive, RabbitMQ DLX, NATS `MaxDeliver`, ASB dead-letter sub-queue) to do
 the actual DLQ-ing. On adapters with no such config, a `deadLetter` decision
@@ -161,6 +161,7 @@ simply drops the message.
 | Adapter | Package | Client library | Native `park` delay | `deadLetter` lands in DLQ |
 |---|---|---|---|---|
 | Memory | `memory` | (none) | ✅ timer re-enqueue | ✅ via hook (native DLQ) |
+| Postgres (pgmq) | `pgmq` | `jackc/pgx/v5` with `pgxpool` | ✅ `set_vt` | ✅ transactional send to DLQ and delete original |
 | Redis Streams | `redis` | `redis/go-redis/v9` | ⬇️ downgrade | ⚠️ drop (XACK; no broker DLQ) |
 | RabbitMQ | `rabbitmq` | `rabbitmq/amqp091-go` | ⬇️ downgrade | ◐ broker DLX (if declared) |
 | AWS SQS | `sqs` | `aws/aws-sdk-go-v2` | ✅ `DelaySeconds` (0–900) | ◐ broker redrive (if configured) |
@@ -224,9 +225,83 @@ go vet -tags integration ./...# compile the broker-backed integration tests
 
 Integration tests are guarded by `//go:build integration` and self-skip unless
 their broker env var is set (e.g. `REDIS_ADDR`, `RABBITMQ_URL`, `KAFKA_BROKERS`,
-`NATS_URL`, `SQS_ENDPOINT`, `PUBSUB_EMULATOR_HOST`,
+`NATS_URL`, `SQS_ENDPOINT`, `PGMQ_URL`, `PUBSUB_EMULATOR_HOST`,
 `AZURE_SERVICEBUS_CONNECTION_STRING`). Bring up the matching `docker compose`,
 export the var, and run `go test -tags integration ./<adapter>/...`.
+
+## Postgres with pgmq
+
+Import `github.com/sns45/anyq/go/pgmq`. Constructors return an error immediately for invalid queue names. Bodies must be valid JSON; Postgres stores them as `jsonb`, so whitespace and object key order can change. Header values must contain UTF8 text. The adapter rejects invalid UTF8 instead of replacing bytes. Headers use the `headers` column, and the reserved `x-anyq-key` header carries `PublishOptions.Key` across the Go and TypeScript adapters.
+
+```go
+cfg := pgmq.Config{
+    ConnectionString: "postgres://postgres:postgres@localhost:5432/postgres",
+    QueueName: "orders",
+    VisibilityTimeout: 30 * time.Second,
+    BaseQueueConfig: core.BaseQueueConfig{
+        Strategy: core.RetryThenDeadLetter(nil),
+    },
+}
+producer, err := pgmq.NewProducer(cfg)
+if err != nil { log.Fatal(err) }
+if err := producer.Connect(ctx); err != nil { log.Fatal(err) }
+consumer, err := pgmq.NewConsumer(cfg)
+if err != nil { log.Fatal(err) }
+if err := consumer.Connect(ctx); err != nil { log.Fatal(err) }
+_, err = producer.Publish(ctx, []byte(`{"orderId":"1"}`), &core.PublishOptions{
+    Key: "customer1", Delay: time.Second,
+    Headers: core.MessageHeaders{"trace": []byte("request1")},
+})
+if err != nil { log.Fatal(err) }
+```
+
+| Config | Default | Meaning |
+|---|---|---|
+| `ConnectionString` | PG environment variables | Postgres connection string |
+| `Pool` | nil | Optional existing `*pgxpool.Pool`; the caller owns it |
+| `QueueName` | required | Must match `^[a-zA-Z0-9_]{1,47}$` |
+| `DeadLetterQueue` | Disabled; `<queue>_dlq` when enabled | Active only when `BaseQueueConfig.DeadLetterQueue` is nonnil and `Enabled` is true. Name precedence: this field, then `BaseQueueConfig.DeadLetterQueue.Destination`, then `<queue>_dlq`. Only active DLQ names are validated; choose a shorter name if the default exceeds 47 characters |
+| `VisibilityTimeout` | `30 * time.Second` | Processing lease; fractional seconds round up |
+| `PollInterval` | `time.Second` | Sleep after an empty read or transport error |
+| `BatchSize` | `100` | Default `SubscribeBatch` size; subscription options may override it |
+| `AutoCreate` | nil (true) | Creates the main queue and any enabled DLQ on connect; use a pointer to false to disable |
+| `AutoInstall` | nil (true) | Attempts `CREATE EXTENSION IF NOT EXISTS pgmq` only when the schema is absent |
+
+`SubscribeOptions.Concurrency` controls workers; each worker reads one lease when ready for its next message. The consumer uses `pgmq.read`, followed by `PollInterval` when the queue is empty. Pausing, cancelling, or disconnecting releases unread handler deliveries with `set_vt 0`. An active database read can take up to `RequestTimeout` to finish and release its result. Disconnect stops new operations immediately and closes an owned pool after active operations finish. A supplied pool stays open.
+
+`Ack` deletes; `Nack(true)` makes the same message visible immediately; `Nack(false)` archives it. Explicit settlement wins over automatic acknowledgement. `ExtendDeadline` sets the lease relative to now and rounds up fractional seconds. `DeliveryAttempt` comes from `read_ct`; message IDs remain decimal strings with an internal `int64`. `Raw()` returns a `pgmq.Record` and `Metadata().Pgmq` carries the queue, ID, read count and timestamps. Health checks query `pgmq.metrics` and report `queueLength` and `totalMessages`.
+
+Native park uses `set_vt` and preserves the message ID. A DLQ is created and used only when `BaseQueueConfig.DeadLetterQueue` is nonnil and `Enabled` is true. Otherwise, a dead letter decision logs a warning and archives the source, the same as `Nack(false)`. With an active DLQ, a dead letter decision sends to it and deletes the source in one transaction. If sending fails or the source is already gone, no new DLQ copy commits. The original headers remain, with `x-original-queue`, `x-death-time`, `x-delivery-attempts` and `x-death-reason` added. The attempts header records the native read count, including when a strategy retries the handler in process. Supplying a `BaseQueueConfig.DeadLetterQueue` with `IncludeError: false` omits the reason.
+
+pgmq settlement identifies a message by ID, without a receipt token for each lease. Keep handlers idempotent and extend the lease before it expires; a stale handler must not settle a message already claimed by another consumer. JSON storage does not support arbitrary binary bodies or binary header values.
+
+Connecting without pgmq returns an error naming the SQL only install path `pgmq-extension/sql/pgmq.sql`. The adapter accepts a SQL only installation by detecting `pgmq.read`, without requiring a `pg_extension` entry.
+
+### Managed Postgres: check the extension allowlist first
+
+As of Sept 7, 2026, `pgmq` is not on the extension allowlist of the managed services below, so `CREATE EXTENSION pgmq` is refused there and the adapter's `autoInstall` fails with a `ConfigurationError`. Skype's `pgq` is absent from the same lists.
+
+| Service | Checked against | pgmq listed? |
+|---|---|---|
+| Amazon RDS for PostgreSQL | [Extension versions](https://docs.aws.amazon.com/AmazonRDS/latest/PostgreSQLReleaseNotes/postgresql-extensions.html), PostgreSQL 9.6 to 19 | No |
+| Amazon Aurora PostgreSQL | [Extensions supported](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraPostgreSQLReleaseNotes/AuroraPostgreSQL.Extensions.html), PostgreSQL 10 to 18 | No |
+| Azure Database for PostgreSQL flexible server | [Extensions by name](https://learn.microsoft.com/en-us/azure/postgresql/extensions/concepts-extensions-versions), article dated 2026-07-10 | No |
+| Google Cloud SQL for PostgreSQL | [Configure extensions](https://docs.cloud.google.com/sql/docs/postgres/extensions), updated 2026-08-28 | No |
+| Google AlloyDB | [Supported extensions](https://docs.cloud.google.com/alloydb/docs/reference/extensions), updated 2026-08-26 | No |
+| Neon | [Postgres extensions](https://neon.com/docs/extensions/pg-extensions) | No |
+| Supabase | [Supabase Queues](https://supabase.com/docs/guides/queues) | Yes, Supabase Queues is built on pgmq |
+
+On the services that do not list it, pgmq documents a SQL only install for exactly this case: pgmq 1.x is plain SQL and PL/pgSQL, so `psql -f pgmq-extension/sql/pgmq.sql <url>` creates the `pgmq` schema without extension privileges. Run that as the database owner, then connect with `autoInstall: false`. This adapter detects a SQL only install (it looks for `pgmq.read`, not for an extension row). The SQL only path has not been verified on those services by this project, and allowlists change, so check the vendor page before relying on this note.
+
+
+The tester exposes the same HTTP endpoints as the other Go testers:
+
+```bash
+PGMQ_URL=postgres://postgres:postgres@localhost:5432/postgres go run ./apps/testers/pgmq
+PGMQ_URL=postgres://postgres:postgres@localhost:5432/postgres go test -race -tags integration ./pgmq -count=1 -v
+```
+
+Run those commands from `go/`. The supplied `apps/testers/pgmq/docker-compose.yml` binds port 5432 for a standalone local database. Integration tests use unique `go_` queue names and skip unless `PGMQ_URL` is set.
 
 ## Known gaps / follow-ups
 

@@ -72,6 +72,15 @@ type MemoryMetadata struct {
 	QueueName string
 }
 
+// PgmqMetadata describes the Postgres message and its current processing lease.
+type PgmqMetadata struct {
+	QueueName  string
+	MsgID      string
+	ReadCount  int
+	EnqueuedAt time.Time
+	VisibleAt  time.Time
+}
+
 // ProviderMetadata carries the driver type plus optional broker-specific detail.
 type ProviderMetadata struct {
 	Provider        QueueDriver
@@ -83,6 +92,7 @@ type ProviderMetadata struct {
 	RedisStreams    *RedisStreamsMetadata
 	NATS            *NATSMetadata
 	Memory          *MemoryMetadata
+	Pgmq            *PgmqMetadata
 }
 
 // Message is the universal message interface. The body is raw bytes; decoding to
