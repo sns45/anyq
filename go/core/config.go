@@ -20,6 +20,7 @@ const (
 	DriverKafka           QueueDriver = "kafka"
 	DriverNATS            QueueDriver = "nats"
 	DriverAzureServiceBus QueueDriver = "azure-servicebus"
+	DriverPgmq            QueueDriver = "pgmq"
 )
 
 // RetryConfig configures exponential backoff for transport-level resilience and
