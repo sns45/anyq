@@ -358,7 +358,7 @@ export abstract class BaseConsumer<T = unknown>
         "strategy may emit 'park' but this adapter has no native delayed-redelivery support; " +
           'park would downgrade to a blocking in-process retry capped by maxAttempts. ' +
           'Set allowParkDowngrade=true to opt into the downgrade, or use an adapter with ' +
-          'native delay (memory, sqs, nats, azure-servicebus).',
+          'native delay (memory, sqs, nats, azure-servicebus, pgmq).',
         { strategy: strategy?.name, driver },
       );
     }

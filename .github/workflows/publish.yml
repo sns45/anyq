@@ -94,6 +94,7 @@ jobs:
             nats
             azure-servicebus
             cloudflare-queues
+            pgmq
           )
 
           published=()
