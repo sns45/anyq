@@ -74,12 +74,14 @@ async function shutdown(): Promise<void> {
   await Promise.all([producer.disconnect(), consumer.disconnect()]);
   process.exit(0);
 }
-process.on('SIGINT', () => {
-  void shutdown();
-});
-process.on('SIGTERM', () => {
-  void shutdown();
-});
+// bun-types 1.4 only exposes Bun's own `process.on` overloads here, which hides
+// the Node signal overloads; go through a minimal structural type instead.
+const signals = process as unknown as { on(event: string, listener: () => void): unknown };
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  signals.on(signal, () => {
+    void shutdown();
+  });
+}
 
 // Start initialization
 start();
