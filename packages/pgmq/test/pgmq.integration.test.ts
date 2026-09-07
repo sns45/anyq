@@ -537,6 +537,162 @@ describeIf('@anyq/pgmq integration', () => {
     }
   }, 30000);
 
+  test('concurrency handles leased rows in parallel so no lease idles behind a slow handler', async () => {
+    const name = q('conc');
+    const short = base(name, {
+      consumer: { visibilityTimeout: 2, longPollSeconds: 1, longPollIntervalMs: 50, pollingInterval: 50 },
+    });
+    const producer = new PgmqProducer<{ i: number }>(short);
+    const a = new PgmqConsumer<{ i: number }>(short);
+    const b = new PgmqConsumer<{ i: number }>(short);
+    const aStarts: number[] = [];
+    const aIds: string[] = [];
+    const bIds: string[] = [];
+
+    try {
+      await producer.connect();
+      await a.connect();
+      await b.connect();
+      await producer.publishBatch([{ body: { i: 0 } }, { body: { i: 1 } }, { body: { i: 2 } }]);
+
+      // Three rows leased for 2s, each handler takes 1.5s. Sequential handling
+      // would let the second and third leases expire and `b` would steal them.
+      await a.subscribe(
+        async (m) => {
+          aStarts.push(Date.now());
+          aIds.push(m.id);
+          await sleep(1500);
+        },
+        { concurrency: 3 },
+      );
+      await sleep(150);
+      await b.subscribe(async (m) => {
+        bIds.push(m.id);
+      });
+
+      expect(await waitFor(() => aIds.length === 3, 6000)).toBe(true);
+      expect(Math.max(...aStarts) - Math.min(...aStarts)).toBeLessThan(1000);
+      await sleep(3000);
+      expect(bIds).toHaveLength(0);
+      expect(new Set(aIds).size).toBe(3);
+      expect(await queueLength(name)).toBe(0);
+    } finally {
+      await b.disconnect();
+      await a.disconnect();
+      await producer.disconnect();
+    }
+  }, 30000);
+
+  test('an explicit nack(true) inside the handler is not undone by autoAck', async () => {
+    const name = q('nackauto');
+    const producer = new PgmqProducer<{ n: number }>(base(name));
+    const consumer = new PgmqConsumer<{ n: number }>(base(name));
+    const attempts: number[] = [];
+
+    try {
+      await producer.connect();
+      await consumer.connect();
+      await producer.publish({ n: 1 });
+
+      // autoAck stays on (default); the handler returns normally after nacking.
+      await consumer.subscribe(async (m) => {
+        attempts.push(m.deliveryAttempt);
+        if (m.deliveryAttempt === 1) {
+          await m.nack(true);
+        }
+      });
+
+      expect(await waitFor(() => attempts.length === 2)).toBe(true);
+      expect(attempts).toEqual([1, 2]);
+      await sleep(200);
+      expect(await queueLength(name)).toBe(0);
+    } finally {
+      await consumer.disconnect();
+      await producer.disconnect();
+    }
+  }, 20000);
+
+  test('a failed DLQ transfer archives nothing and the message is retried after the lease', async () => {
+    const name = q('dlqfail');
+    const dlq = q('dlqfail_d');
+    const config = base(name, {
+      consumer: { visibilityTimeout: 2, longPollSeconds: 1, longPollIntervalMs: 50, pollingInterval: 50 },
+      deadLetterQueue: { enabled: true, destination: dlq, maxDeliveryAttempts: 99, includeError: true },
+      strategy: deadLetterImmediate(),
+    });
+    const producer = new PgmqProducer<{ id: string }>(config);
+    const consumer = new PgmqConsumer<{ id: string }>(config);
+    const attempts: number[] = [];
+
+    try {
+      await producer.connect();
+      await consumer.connect();
+      // Break the DLQ after connect() created it.
+      await admin.query('SELECT pgmq.drop_queue($1)', [dlq]);
+      await producer.publish({ id: 'poison' });
+
+      await consumer.subscribe(
+        async (m) => {
+          attempts.push(m.deliveryAttempt);
+          if (m.deliveryAttempt === 2) {
+            await admin.query('SELECT pgmq.create($1)', [dlq]);
+          }
+          throw new Error('poison payload');
+        },
+        { autoAck: false },
+      );
+
+      expect(
+        await waitFor(async () => (await queueLength(dlq).catch(() => -1)) === 1, 10000),
+      ).toBe(true);
+      expect(attempts).toEqual([1, 2]);
+      const { rows } = await admin.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM pgmq.a_${name}`,
+      );
+      expect(rows[0].n).toBe(0);
+      expect(await queueLength(name)).toBe(0);
+    } finally {
+      await consumer.disconnect();
+      await producer.disconnect();
+    }
+  }, 30000);
+
+  test('dead letter writes no DLQ copy when the source message is already gone', async () => {
+    const name = q('dlqgone');
+    const dlq = q('dlqgone_d');
+    const config = base(name, {
+      deadLetterQueue: { enabled: true, destination: dlq, maxDeliveryAttempts: 99, includeError: true },
+      strategy: deadLetterImmediate(),
+    });
+    const producer = new PgmqProducer<{ id: string }>(config);
+    const consumer = new PgmqConsumer<{ id: string }>(config);
+    let calls = 0;
+
+    try {
+      await producer.connect();
+      await consumer.connect();
+      await producer.publish({ id: 'poison' });
+
+      await consumer.subscribe(
+        async (m) => {
+          calls++;
+          // Another consumer (or an expired lease) finished the message first.
+          await admin.query('SELECT pgmq.delete($1, $2::bigint)', [name, m.id]);
+          throw new Error('poison payload');
+        },
+        { autoAck: false },
+      );
+
+      expect(await waitFor(() => calls === 1)).toBe(true);
+      await sleep(500);
+      expect(await queueLength(dlq)).toBe(0);
+      expect(await queueLength(name)).toBe(0);
+    } finally {
+      await consumer.disconnect();
+      await producer.disconnect();
+    }
+  }, 20000);
+
   test('connecting to a database without pgmq (autoInstall off) names the SQL only install path', async () => {
     const dbName = `anyq_nopgmq_${suffix}`;
     await admin.query(`CREATE DATABASE ${dbName}`);

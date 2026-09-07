@@ -3,7 +3,7 @@
  * @module @anyq/pgmq/consumer
  */
 
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import {
   BaseConsumer,
   createMessage,
@@ -79,6 +79,13 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
   private running = false;
   private pollingPromise: Promise<void> | null = null;
   private useLongPoll = false;
+  /**
+   * Messages that have been settled (acked, nacked, parked or dead lettered).
+   * A settled message ignores further ack/nack/extend calls and is skipped by
+   * autoAck, so an explicit `nack(true)` inside a handler is never undone by
+   * the automatic ack that follows a normal return.
+   */
+  private readonly settled = new WeakSet<IMessage<T>>();
 
   // pgmq schedules redelivery natively through the visibility timeout, so
   // `park` never downgrades to an in-process sleep.
@@ -231,6 +238,7 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
     const seconds = Math.max(0, Math.ceil(delayMs / 1000));
     try {
       await this.setVt(message.id, seconds);
+      this.settled.add(message);
       this.logger.debug('Message parked for redelivery', {
         messageId: message.id,
         delaySeconds: seconds,
@@ -246,52 +254,92 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
 
   /**
    * Native dead letter: copy to the DLQ queue with the same headers the
-   * memory adapter attaches, then delete the original. Without a DLQ the
-   * message is archived rather than dropped.
+   * memory adapter attaches and delete the original, in ONE transaction.
+   *
+   * - If the source row is already gone (settled elsewhere, or its lease
+   *   expired and another consumer finished it) the transaction rolls back,
+   *   so no orphan DLQ copy is written.
+   * - If the transfer fails for any other reason nothing is archived or
+   *   deleted; the lease is left to expire so the message is retried after
+   *   `visibilityTimeout`.
+   *
+   * Without a DLQ configured the message is archived rather than dropped.
    */
   protected override async deadLetterMessage(
     message: IMessage<T>,
     reason: string,
   ): Promise<void> {
     const pool = this.pool;
-    if (this.dlqName && pool) {
-      const dlqConfig = this.config.deadLetterQueue;
-      const headers: Record<string, string | Buffer | undefined> = {
-        ...message.headers,
-        'x-original-queue': this.queueName,
-        'x-death-time': new Date().toISOString(),
-        'x-delivery-attempts': String(message.deliveryAttempt),
-      };
-      if (dlqConfig?.includeError !== false) {
-        headers['x-death-reason'] = reason;
-      }
-
-      try {
-        await pool.query('SELECT pgmq.send($1, $2::jsonb, $3::jsonb)', [
-          this.dlqName,
-          toJsonText(this.serializer.serialize(message.body)),
-          JSON.stringify(packHeaders(headers, message.key)),
-        ]);
-        await this.deleteOne(message.id);
-        this.logger.warn('Message dead-lettered', {
-          messageId: message.id,
-          reason,
-          dlq: this.dlqName,
-        });
-        return;
-      } catch (err) {
-        this.logger.error('Failed to dead-letter message; archiving instead', {
-          messageId: message.id,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    } else {
+    if (!this.dlqName || !pool) {
       this.logger.warn('No DLQ configured; archiving message', {
         messageId: message.id,
         reason,
       });
+      await message.nack(false);
+      return;
     }
-    await message.nack(false);
+    if (this.settled.has(message)) {
+      this.logger.debug('deadLetterMessage skipped; message already settled', {
+        messageId: message.id,
+      });
+      return;
+    }
+
+    const dlqConfig = this.config.deadLetterQueue;
+    const headers: Record<string, string | Buffer | undefined> = {
+      ...message.headers,
+      'x-original-queue': this.queueName,
+      'x-death-time': new Date().toISOString(),
+      'x-delivery-attempts': String(message.deliveryAttempt),
+    };
+    if (dlqConfig?.includeError !== false) {
+      headers['x-death-reason'] = reason;
+    }
+
+    let client: PoolClient | undefined;
+    try {
+      client = await pool.connect();
+      await client.query('BEGIN');
+      await client.query('SELECT pgmq.send($1, $2::jsonb, $3::jsonb)', [
+        this.dlqName,
+        toJsonText(this.serializer.serialize(message.body)),
+        JSON.stringify(packHeaders(headers, message.key)),
+      ]);
+      const { rows } = await client.query<{ ok: boolean }>(
+        'SELECT pgmq.delete($1, $2::bigint) AS ok',
+        [this.queueName, message.id],
+      );
+      if (rows[0]?.ok !== true) {
+        await client.query('ROLLBACK');
+        this.settled.add(message);
+        this.logger.warn('Dead letter skipped; source message was already gone, no DLQ copy written', {
+          messageId: message.id,
+          dlq: this.dlqName,
+        });
+        return;
+      }
+      await client.query('COMMIT');
+      this.settled.add(message);
+      this.logger.warn('Message dead-lettered', {
+        messageId: message.id,
+        reason,
+        dlq: this.dlqName,
+      });
+    } catch (err) {
+      if (client) {
+        await client.query('ROLLBACK').catch(() => undefined);
+      }
+      this.logger.error(
+        'Dead letter transfer failed; leaving the lease to expire so the message is retried',
+        {
+          messageId: message.id,
+          dlq: this.dlqName,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+    } finally {
+      client?.release();
+    }
   }
 
   /**
@@ -372,13 +420,10 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
           continue;
         }
 
-        for (let i = 0; i < rows.length; i++) {
-          if (!this.running || this._paused) {
-            await this.release(rows.slice(i));
-            break;
-          }
-          await this.handleOne(rows[i], handler, opts);
-        }
+        // Every row read is leased for `visibilityTimeout`, so all of them
+        // must be handled at once; running them one after another would let
+        // the later leases expire while the earlier handlers run.
+        await Promise.all(rows.map((row) => this.handleOne(row, handler, opts)));
       } catch (error) {
         if (this.running) {
           this.logger.error('Error polling messages', {
@@ -424,7 +469,9 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
         try {
           await handler(messages);
           if (opts.autoAck) {
-            await this.deleteMany(messages.map((m) => m.id));
+            const pending = messages.filter((m) => !this.settled.has(m));
+            await this.deleteMany(pending.map((m) => m.id));
+            for (const m of pending) this.settled.add(m);
           }
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
@@ -460,7 +507,8 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
     try {
       this.emit('message', message);
       await handler(message);
-      if (opts.autoAck) {
+      // An explicit ack/nack inside the handler wins over autoAck.
+      if (opts.autoAck && !this.settled.has(message)) {
         await message.ack();
       }
     } catch (error) {
@@ -573,7 +621,7 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
     const enqueuedAt = new Date(row.enqueued_at);
     const visibleAt = new Date(row.vt);
 
-    return createMessage<T>({
+    const message: IMessage<T> = createMessage<T>({
       id: msgId,
       body,
       key,
@@ -592,10 +640,14 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
       },
       raw: row,
       onAck: async () => {
+        if (this.settled.has(message)) return;
+        this.settled.add(message);
         await this.deleteOne(msgId);
         this.logger.debug('Message acknowledged', { messageId: msgId });
       },
       onNack: async (requeue = true) => {
+        if (this.settled.has(message)) return;
+        this.settled.add(message);
         if (requeue) {
           await this.setVt(msgId, 0);
         } else {
@@ -604,11 +656,13 @@ export class PgmqConsumer<T = unknown> extends BaseConsumer<T> {
         this.logger.debug('Message nacked', { messageId: msgId, requeue });
       },
       onExtendDeadline: async (seconds: number) => {
+        if (this.settled.has(message)) return;
         // pgmq sets an absolute deadline from now, like SQS ChangeMessageVisibility.
         await this.setVt(msgId, seconds);
         this.logger.debug('Deadline extended', { messageId: msgId, seconds });
       },
     });
+    return message;
   }
 
   private sleep(ms: number): Promise<void> {
